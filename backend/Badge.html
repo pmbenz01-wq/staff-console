@@ -1,0 +1,136 @@
+<!--
+  A6 badge print page — served by Apps Script (doGet?page=badge&eventId=…&regId=…).
+
+  Real print geometry: 105×148mm at zero margin, one badge per page, so it
+  goes straight to a card printer or "Save as PDF" without scaling.
+-->
+<base target="_top">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anuphan:wght@200;300;400;500;600&family=Trirong:wght@200;300;400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  @page { size: 105mm 148mm; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #55514a; }
+  .sheet {
+    width: 105mm; height: 148mm; margin: 12mm auto; overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 6mm 16mm rgba(0,0,0,.35);
+  }
+  .top { height: 9mm; display: grid; place-items: center; }
+  .top i { display: block; width: 14mm; height: 3.4mm; border-radius: 99px; background: rgba(255,255,255,.55); }
+  .ev { padding: 5mm 7mm 0; display: flex; align-items: center; gap: 3mm; }
+  .ev span { font: 400 2.9mm "IBM Plex Mono", monospace; letter-spacing: .16em; white-space: nowrap; }
+  .ev i { display: block; width: .4mm; height: 4.6mm; }
+  .body { flex: 1; padding: 6mm 7mm 0; display: flex; flex-direction: column; }
+  .label { font: 400 2.7mm "IBM Plex Mono", monospace; letter-spacing: .2em; opacity: .55; }
+  .name { font: 200 9.4mm/1.12 Trirong, serif; margin-top: 3mm; word-break: break-word; }
+  .org { font: 300 3.9mm Anuphan, sans-serif; opacity: .62; margin-top: 3mm; }
+  .type { margin-top: auto; margin-bottom: 5mm; align-self: flex-start; padding: 1.4mm 3.6mm;
+          font: 400 3mm "IBM Plex Mono", monospace; letter-spacing: .14em; }
+  .foot { padding: 4.5mm 7mm; display: flex; align-items: center; gap: 4.5mm; }
+  .qr { width: 24mm; height: 24mm; flex: none; padding: 1mm; }
+  .lines { font: 400 3.2mm/1.7 "IBM Plex Mono", monospace; letter-spacing: .04em; white-space: nowrap; }
+  .bar { height: 4mm; }
+
+  .toolbar { max-width: 105mm; margin: 8mm auto 0; display: flex; gap: 3mm; justify-content: center; }
+  .toolbar button {
+    background: #f0ece3; color: #1a1815; border: 0; padding: 3mm 6mm; cursor: pointer;
+    font: 500 3.2mm "IBM Plex Mono", monospace; letter-spacing: .16em;
+  }
+  .msg { color: #e8e3d8; font: 300 4mm Anuphan, sans-serif; text-align: center; padding: 20mm 8mm; }
+
+  @media print {
+    html, body { background: #fff; }
+    .toolbar { display: none; }
+    .sheet { margin: 0; box-shadow: none; }
+  }
+</style>
+
+<div id="out"><div class="msg">กำลังโหลดบัตร…</div></div>
+
+<script>
+  var ASSET_BASE = "https://pmbenz01-wq.github.io/staff-console/staff";
+
+  var THEMES = {
+    editorial: { paper: "#f4f1e6", accent: "#d8482b", ink: "#17150f" },
+    brass:     { paper: "#f6f2e8", accent: "#a8874f", ink: "#1c1a16" },
+    onyx:      { paper: "#1a1815", accent: "#c9ac74", ink: "#f0ece3" },
+    forest:    { paper: "#f2f4ef", accent: "#2f6b4f", ink: "#141815" },
+    ink:       { paper: "#eef1f6", accent: "#2f4d8c", ink: "#12161f" }
+  };
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function qrSvg(payload) {
+    if (!window.qrcode) return "";
+    var qr = window.qrcode(0, "M");
+    qr.addData(String(payload));
+    qr.make();
+    var n = qr.getModuleCount(), d = "";
+    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) d += "M" + c + "," + r + "h1v1h-1Z";
+    return '<svg viewBox="-2 -2 ' + (n + 4) + ' ' + (n + 4) + '" width="100%" height="100%" shape-rendering="crispEdges" style="display:block"><path d="' + d + '" fill="currentColor"/></svg>';
+  }
+
+  function draw(b) {
+    var t = THEMES[b.theme] || THEMES.editorial;
+    var cfg = b.config || {};
+    var html =
+      '<div class="sheet" style="background:' + t.paper + ';color:' + t.ink + '">' +
+        '<div class="top" style="background:' + t.accent + '"><i></i></div>' +
+        (cfg.logo ? '<div class="ev"><i style="background:' + t.accent + '"></i>' +
+          '<span style="color:' + t.accent + '">' + esc(b.eventShort || b.eventName) + '</span></div>' : '') +
+        '<div class="body">' +
+          '<div class="label">ATTENDEE</div>' +
+          '<div class="name">' + esc(b.name) + '</div>' +
+          (cfg.org && b.org ? '<div class="org">' + esc(b.org) + '</div>' : '') +
+          (cfg.type ? '<div class="type" style="border:.3mm solid ' + t.accent + ';color:' + t.accent + '">' +
+            esc(String(b.type || '').toUpperCase()) + '</div>' : '') +
+        '</div>' +
+        (cfg.qr ? '<div class="foot" style="background:' + t.ink + ';color:' + t.paper + '">' +
+          '<div class="qr" style="background:' + t.paper + ';color:' + t.ink + '">' + qrSvg(b.qrPayload) + '</div>' +
+          '<div class="lines">' + esc(b.code) + '<br>' + esc(b.place || '') + '<br>' + esc(b.date || '') + '</div>' +
+        '</div>' : '') +
+        (cfg.bar ? '<div class="bar" style="background:' + t.accent + '"></div>' : '') +
+      '</div>' +
+      '<div class="toolbar"><button onclick="window.print()">พิมพ์บัตรนี้</button>' +
+      '<button onclick="window.close()">ปิด</button></div>';
+    document.getElementById("out").innerHTML = html;
+    // Give fonts a moment so the print dialog captures the real layout.
+    setTimeout(function () { window.print(); }, 700);
+  }
+
+  function param(k) {
+    var m = new RegExp("[?&]" + k + "=([^&]*)").exec(location.search);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+
+  function load() {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (!res || !res.ok) {
+          document.getElementById("out").innerHTML =
+            '<div class="msg">เปิดบัตรไม่ได้: ' + esc(res && res.error || "unknown") + '</div>';
+          return;
+        }
+        draw(res.data);
+      })
+      .withFailureHandler(function (e) {
+        document.getElementById("out").innerHTML = '<div class="msg">เปิดบัตรไม่ได้: ' + esc(e.message || e) + '</div>';
+      })
+      .svc("badgeData", { eventId: param("eventId"), regId: param("regId") });
+  }
+
+  var s = document.createElement("script");
+  s.src = ASSET_BASE + "/vendor/qrcode.js";
+  s.onload = load;
+  s.onerror = function () {
+    document.getElementById("out").innerHTML =
+      '<div class="msg">โหลดไลบรารี QR ไม่ได้ ตรวจว่า GitHub Pages เปิดอยู่</div>';
+  };
+  document.body.appendChild(s);
+</script>
