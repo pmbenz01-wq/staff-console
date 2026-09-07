@@ -2,11 +2,12 @@
   Staff Console shell — served by Apps Script (doGet → serveStaffConsole_).
 
   Deliberately thin: the actual UI (staff.css / staff.js) is loaded from the
-  GitHub Pages copy of this repo, so day-to-day UI changes are a `git push`
-  and never require re-pasting this file or redeploying the web app. Only
-  backend changes (Code.gs) need a redeploy.
+  Vercel deployment of this repo (docs/ mirrors staff/), so day-to-day UI
+  changes are a `git push` and never require re-pasting this file or
+  redeploying the web app. Only backend changes (Code.gs) need a redeploy.
 
-  If you fork this to another GitHub account, change ASSET_BASE below.
+  If you redeploy this to a different host, change ASSET_BASE below.
+-->
 -->
 <base target="_top">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,7 +29,7 @@
 
 <script>
   // Where the UI assets live. Must be publicly reachable over https.
-  var ASSET_BASE = "https://pmbenz01-wq.github.io/staff-console/staff";
+  var ASSET_BASE = "https://staff-console-teal.vercel.app/staff";
 
   (function () {
     var css = document.createElement("link");
