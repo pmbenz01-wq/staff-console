@@ -1069,8 +1069,12 @@ function teamRows_() {
   });
 }
 
+// ADMIN-only — the team roster (everyone's email, role, gate) is sensitive
+// enough that even read access shouldn't be VIEWER/STAFF-wide. This is the
+// real boundary; the "team" nav item is also hidden from non-admins in
+// staff.js, but that's UX only — this is what actually blocks it.
 function svcTeam_() {
-  requireStaff_(null, 'VIEWER');
+  requireStaff_(null, 'ADMIN');
   return teamRows_();
 }
 

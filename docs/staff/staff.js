@@ -353,7 +353,11 @@
         '<div class="ev-meta">' + esc(e.date || "") + "</div></div>";
     }).join("");
 
-    var nav = NAV.map(function (n) {
+    // Team & roles is ADMIN-only — hidden here, and rejected by svcTeam_ on
+    // the backend too if someone calls the API directly.
+    var nav = NAV.filter(function (n) {
+      return n.id !== "team" || can("ADMIN");
+    }).map(function (n) {
       var count = n.count && state.dash ? '<div class="nav-count">' + state.dash.total + "</div>" : "";
       return '<div class="nav-item' + (state.screen === n.id ? " is-active" : "") + '" data-act="nav" data-id="' + n.id + '">' +
         '<div class="nav-bar"></div><div class="nav-label">' + esc(n.label) + "</div>" + count + "</div>";
