@@ -2,19 +2,56 @@
   "use strict";
 
   // ---------------------------------------------------------------------
-  // Transport. Inside Apps Script we talk to svc() over google.script.run —
-  // same origin, so the Google session travels with it and there is no CORS.
-  // window.STAFF_DEV_API is only set by the local dev harness used for tests.
+  // Auth + transport.
+  //
+  // This page is hosted on Vercel — a different origin from the Apps Script
+  // backend — so the old trick (same-origin google.script.run, riding on
+  // Apps Script's own session) doesn't apply here. Identity instead comes
+  // from a Google Identity Services ID token, sent with every call and
+  // verified server-side (see verifyIdToken_ in Code.gs) against Google
+  // itself, not trusted from the client.
   // ---------------------------------------------------------------------
+  var ID_TOKEN_KEY = "staff-id-token";
+
+  function saveToken(token, exp) {
+    try { localStorage.setItem(ID_TOKEN_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) { /* ignore */ }
+  }
+  function loadToken() {
+    try {
+      var raw = localStorage.getItem(ID_TOKEN_KEY);
+      if (!raw) return null;
+      var d = JSON.parse(raw);
+      if (!d.token || !d.exp || d.exp * 1000 < Date.now() + 30000) return null; // 30s safety margin
+      return d.token;
+    } catch (e) { return null; }
+  }
+  function clearToken() {
+    try { localStorage.removeItem(ID_TOKEN_KEY); } catch (e) { /* ignore */ }
+  }
+  // A JWT's payload is the middle base64url segment — no signature check
+  // needed client-side, we only read `exp` to know when to stop using it.
+  // The signature IS checked, server-side, on every call.
+  function decodeJwtExp(jwt) {
+    try {
+      var b64 = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      var json = JSON.parse(decodeURIComponent(atob(b64).split("").map(function (c) {
+        return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join("")));
+      return json.exp || 0;
+    } catch (e) { return 0; }
+  }
+
   function callSvc(action, payload) {
-    if (window.google && window.google.script && window.google.script.run) {
-      return new Promise(function (resolve, reject) {
-        window.google.script.run
-          .withSuccessHandler(resolve)
-          .withFailureHandler(function (e) { reject(new Error(e && e.message ? e.message : String(e))); })
-          .svc(action, payload || {});
-      });
+    var idToken = loadToken();
+    if (idToken && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+      return fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: "staffCall", idToken: idToken, staffAction: action, payload: payload || {} })
+      }).then(function (r) { return r.json(); });
     }
+    // Local dev harness only (see ../../../_test/mock-staff.js) — never used
+    // in production, where APP_CONFIG + a real token are always present.
     if (window.STAFF_DEV_API) {
       return fetch(window.STAFF_DEV_API, {
         method: "POST",
@@ -33,6 +70,7 @@
       return res.data;
     });
   }
+
 
   var THEMES = {
     editorial: { label: "Editorial", paper: "#f4f1e6", accent: "#d8482b", ink: "#17150f" },
@@ -56,7 +94,7 @@
   ];
 
   var state = {
-    phase: "loading",       // loading | error | ready
+    phase: "signin",        // signin | loading | error | ready
     fatal: "",
     me: null,
     events: [],
@@ -117,10 +155,45 @@
   }
 
   // ---------------------------------------------------------------------
-  // Boot
+  // Boot / sign-in
   // ---------------------------------------------------------------------
   function boot() {
     app = document.getElementById("app");
+    render();
+    var existing = loadToken();
+    if (existing) { startBootstrap(); return; }
+    mountSignIn();
+  }
+
+  function mountSignIn() {
+    var s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.onload = renderGisButton;
+    s.onerror = function () {
+      state.phase = "error";
+      state.fatal = "gsi_load_failed";
+      render();
+    };
+    document.body.appendChild(s);
+  }
+
+  function renderGisButton() {
+    var clientId = window.APP_CONFIG && window.APP_CONFIG.GOOGLE_CLIENT_ID;
+    var slot = document.getElementById("gis-button");
+    if (!clientId || !slot || !window.google || !window.google.accounts) return;
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: function (resp) {
+        var exp = decodeJwtExp(resp.credential);
+        saveToken(resp.credential, exp);
+        startBootstrap();
+      }
+    });
+    window.google.accounts.id.renderButton(slot, { theme: "filled_black", size: "large", text: "signin_with", shape: "pill" });
+  }
+
+  function startBootstrap() {
+    state.phase = "loading";
     render();
     api("bootstrap").then(function (d) {
       state.me = d.me;
@@ -137,11 +210,32 @@
       render();
       loadScreen();
     }).catch(function (e) {
+      var m = String(e && e.message || e);
+      // The token we had was rejected outright (not just "not on the team
+      // yet") — clear it and send the person back through sign-in rather
+      // than showing a dead end.
+      if (m.indexOf("invalid_id_token") >= 0 || m.indexOf("wrong_audience") >= 0 ||
+          m.indexOf("missing_id_token") >= 0 || m.indexOf("email_not_verified") >= 0) {
+        clearToken();
+        state.phase = "signin";
+        render();
+        mountSignIn();
+        return;
+      }
       state.phase = "error";
-      state.fatal = String(e && e.message || e);
+      state.fatal = m;
       render();
     });
   }
+
+  function signOut() {
+    clearToken();
+    state.phase = "signin";
+    state.me = null;
+    render();
+    mountSignIn();
+  }
+
 
   function loadScreen() {
     var s = state.screen, id = state.eventId;
@@ -174,13 +268,26 @@
   function render() {
     if (!app) return;
     var html;
-    if (state.phase === "loading") html = renderBoot();
+    if (state.phase === "signin") html = renderSignIn();
+    else if (state.phase === "loading") html = renderBoot();
     else if (state.phase === "error") html = renderFatal();
     else html = renderShell();
     if (state.toast) html += '<div class="toast">' + esc(state.toast) + "</div>";
     app.innerHTML = html;
     bind();
     if (state.phase === "ready" && state.screen === "scan") mountCamera();
+    if (state.phase === "signin" && window.google && window.google.accounts) renderGisButton();
+  }
+
+  function renderSignIn() {
+    return '<div class="boot"><div class="boot-card">' +
+      '<div class="boot-kicker">STAFF CONSOLE</div>' +
+      '<div class="boot-title">ระบบลงทะเบียน<br>เข้างาน</div>' +
+      '<div class="boot-sub">เข้าสู่ระบบด้วยบัญชี Google ที่ได้รับสิทธิ์เจ้าหน้าที่</div>' +
+      '<div class="boot-rule"></div>' +
+      '<div id="gis-button"></div>' +
+      '<div class="muted">ใช้อีเมล Google ที่แอดมินเพิ่มไว้ในทีมเท่านั้น</div>' +
+      "</div></div>";
   }
 
   function renderBoot() {
@@ -208,6 +315,17 @@
     } else if (f.indexOf("team_access_not_configured") >= 0) {
       body = "<p>ยังไม่ได้สร้างไฟล์สิทธิ์ทีมงาน</p><p><b>วิธีแก้:</b> ใน Apps Script เลือกฟังก์ชัน " +
         "<code>setupTeamAccessSheet</code> แล้วกด Run หนึ่งครั้ง</p>";
+    } else if (f.indexOf("google_client_id_not_configured") >= 0) {
+      body = "<p>ยังไม่ได้ใส่ Google OAuth Client ID ในโค้ดฝั่งเซิร์ฟเวอร์</p>" +
+        "<p><b>วิธีแก้:</b> เปิด <code>backend/Code.gs</code> → แก้ค่า <code>GOOGLE_CLIENT_ID</code> " +
+        "ให้เป็น Client ID จริงจาก Google Cloud Console → Credentials แล้ว deploy ใหม่</p>";
+    } else if (f.indexOf("wrong_audience") >= 0) {
+      body = "<p>Client ID ที่หน้าเว็บใช้ ไม่ตรงกับที่ตั้งไว้ในเซิร์ฟเวอร์</p>" +
+        "<p><b>วิธีแก้:</b> ตรวจว่า <code>GOOGLE_CLIENT_ID</code> ใน <code>Code.gs</code> กับใน " +
+        "<code>staff/config.js</code> (ฝั่งหน้าเว็บ) เป็นค่าเดียวกันเป๊ะ</p>";
+    } else if (f.indexOf("gsi_load_failed") >= 0) {
+      body = "<p>โหลดสคริปต์ Google Sign-In ไม่สำเร็จ</p><p><b>วิธีแก้:</b> เช็คว่าเครื่องนี้เข้าอินเทอร์เน็ตได้ " +
+        "และ accounts.google.com ไม่ถูกบล็อก แล้วลองรีเฟรชอีกครั้ง</p>";
     } else if (f.indexOf("no_events") >= 0) {
       body = "<p>ไม่พบงานที่คุณมีสิทธิ์เข้าถึง</p><p><b>วิธีแก้:</b> ตรวจคอลัมน์ <code>event_scope</code> " +
         "ในแท็บ Staff ว่าเป็น <code>ALL</code> หรือมีรหัสงานที่มีอยู่จริง</p>";
@@ -250,7 +368,8 @@
       '<div class="nav">' + nav + "</div>" +
       '<div class="side-foot"><div class="avatar">' + esc((me.name || "?").slice(0, 1)) + "</div>" +
       '<div class="side-me"><div class="side-me-name">' + esc(me.name || "") + "</div>" +
-      '<div class="side-me-role">' + esc(me.role || "") + " · " + esc(me.gate || "") + "</div></div></div></div>";
+      '<div class="side-me-role">' + esc(me.role || "") + " · " + esc(me.gate || "") + "</div></div>" +
+      '<div class="mono" data-act="sign-out" style="margin-left:auto;font-size:9.5px;color:#6f6a5f;cursor:pointer">ออก</div></div></div>';
   }
 
   function renderTop() {
@@ -804,6 +923,7 @@
   function act(a, el) {
     switch (a) {
       case "reload": location.reload(); break;
+      case "sign-out": signOut(); break;
       case "nav": go(el.dataset.id); break;
       case "pick-event":
         if (state.screen === "scan") stopCamera();
@@ -913,7 +1033,11 @@
   }
 
   function printUrl(regId) {
-    var base = location.href.split("?")[0];
+    // Badge.html is still served by Apps Script (session-based), not this
+    // Vercel-hosted app. That is fine: whoever is signed in here via Google
+    // Sign-In already has an active Google session in this same browser, so
+    // Apps Script recognizes it without a second login.
+    var base = (window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) || "";
     return base + "?page=badge&eventId=" + encodeURIComponent(state.eventId) + "&regId=" + encodeURIComponent(regId);
   }
 

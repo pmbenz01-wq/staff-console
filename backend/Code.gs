@@ -220,6 +220,22 @@ function handle_(e) {
   try {
     var params = parseParams_(e);
     action = params.action;
+
+    // The Vercel-hosted Staff Console calls in through here — a verified
+    // Google ID token stands in for the same-origin session the old
+    // Apps-Script-hosted page relied on. See verifyIdToken_() and
+    // currentStaff_(). svc() already returns {ok,data,error}, so this
+    // short-circuits the switch below instead of re-wrapping it.
+    if (action === 'staffCall') {
+      var email = verifyIdToken_(params.idToken);
+      VERIFIED_EMAIL_ = email;
+      try {
+        return json_(svc(params.staffAction, params.payload || {}));
+      } finally {
+        VERIFIED_EMAIL_ = null;
+      }
+    }
+
     var data;
     switch (action) {
       case 'listEvents': data = listEvents(); break;
@@ -418,13 +434,28 @@ function getMyPass(email) {
 // the only place a role is decided: the client never sends its own role.
 // ===========================================================================
 
+// Fill in after creating the OAuth client (Google Cloud Console → Credentials).
+var GOOGLE_CLIENT_ID = 'REPLACE_WITH_YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com';
+
 var ROLE_RANK = { VIEWER: 1, STAFF: 2, ADMIN: 3 };
 
-// Identity comes from Google, never from the page. If this returns blank the
-// deployment is misconfigured — see the error text surfaced in the console UI.
+// Set for the duration of one staffCall_ request (see handle_ below), after
+// the caller's Google ID token has been verified. Apps Script executions are
+// single-threaded per request, so this can't leak between requests.
+var VERIFIED_EMAIL_ = null;
+
+// Identity comes from Google, never from the page. Two paths, in order:
+//   1. A verified OAuth ID token (Vercel-hosted console, cross-origin) — see
+//      verifyIdToken_() and the 'staffCall' action in handle_().
+//   2. Session.getActiveUser() (legacy same-origin Apps Script HtmlService
+//      page, Staff.html) — kept as a fallback so that page still works.
+// If both come back blank, the deployment/config is wrong — see the error
+// text surfaced in the console UI.
 function currentStaff_() {
-  var email = '';
-  try { email = (Session.getActiveUser().getEmail() || '').trim().toLowerCase(); } catch (err) { email = ''; }
+  var email = VERIFIED_EMAIL_ || '';
+  if (!email) {
+    try { email = (Session.getActiveUser().getEmail() || '').trim().toLowerCase(); } catch (err) { email = ''; }
+  }
   if (!email) throw new Error('no_identity');
   var row = findStaffByEmail_(email);
   if (!row) throw new Error('not_authorized:' + email);
@@ -435,6 +466,29 @@ function currentStaff_() {
     scope: String(row.event_scope || ''),
     gate: row.gate || '—'
   };
+}
+
+// Verifies a Google Identity Services ID token against Google's own tokeninfo
+// endpoint — no local JWT library needed. Checks the token was actually
+// issued to OUR OAuth client (aud) and that Google verified the email itself
+// (email_verified), then returns the email. Throws on anything else: expired,
+// wrong audience, or malformed.
+function verifyIdToken_(idToken) {
+  if (!idToken) throw new Error('missing_id_token');
+  var clientId = GOOGLE_CLIENT_ID;
+  if (!clientId || clientId.indexOf('REPLACE_WITH') === 0) throw new Error('google_client_id_not_configured');
+  var resp;
+  try {
+    resp = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken), { muteHttpExceptions: true });
+  } catch (err) {
+    throw new Error('token_verify_failed');
+  }
+  if (resp.getResponseCode() !== 200) throw new Error('invalid_id_token');
+  var info = JSON.parse(resp.getContentText());
+  if (info.aud !== clientId) throw new Error('wrong_audience');
+  if (info.email_verified !== 'true' && info.email_verified !== true) throw new Error('email_not_verified');
+  if (!info.email) throw new Error('no_email_in_token');
+  return String(info.email).trim().toLowerCase();
 }
 
 function requireStaff_(eventId, minRole) {
