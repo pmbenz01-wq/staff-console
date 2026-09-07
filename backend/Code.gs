@@ -810,7 +810,12 @@ function logScan_(eventId, regId, badgeCode, name, staff, device, result, client
 // Attendees
 // ---------------------------------------------------------------------------
 function svcAttendees_(eventId, query) {
-  requireStaff_(eventId, 'VIEWER');
+  var staff = requireStaff_(eventId, 'VIEWER');
+  // Door/scanning staff (STAFF, VIEWER) can search by email/phone but don't
+  // get to see the raw values back — PDPA: minimize PII exposure to people
+  // who only need name + badge code + status to do their job. Only ADMIN
+  // sees full contact info.
+  var isAdmin = staff.role === 'ADMIN';
   var q = String(query || '').trim().toLowerCase();
   var rows = regRowsFor_(eventId);
   if (q) {
@@ -823,8 +828,9 @@ function svcAttendees_(eventId, query) {
   rows.sort(function (a, b) { return new Date(b.registered_at) - new Date(a.registered_at); });
   return rows.slice(0, 300).map(function (r) {
     return {
-      regId: r.reg_id, name: r.full_name, email: r.email, phone: r.phone, org: r.org,
-      type: r.type, code: r.badge_code, status: r.status, source: r.source,
+      regId: r.reg_id, name: r.full_name,
+      email: isAdmin ? r.email : '', phone: isAdmin ? r.phone : '',
+      org: r.org, type: r.type, code: r.badge_code, status: r.status, source: r.source,
       by: r.checked_in_by || '', at: r.checked_in_at || '', gate: r.gate || ''
     };
   });
@@ -856,8 +862,10 @@ function svcSetCheckedIn_(p) {
 // the attendee's own pass screen both pick it up on next read.
 var PASS_TYPES = ['ทั่วไป', 'VIP', 'สื่อ'];
 
+// Pass-type changes (ทั่วไป -> VIP/สื่อ) are an organiser decision, not
+// something door staff should be able to grant themselves — ADMIN only.
 function svcSetType_(p) {
-  var staff = requireStaff_(p.eventId, 'STAFF');
+  var staff = requireStaff_(p.eventId, 'ADMIN');
   var type = String(p.type || '').trim();
   if (PASS_TYPES.indexOf(type) < 0) throw new Error('bad_type');
 
@@ -958,8 +966,10 @@ function svcHistory_(eventId, filter) {
   });
 }
 
+// Full data export (every attendee's email/phone in one file) — ADMIN only,
+// same PII reasoning as svcAttendees_'s masking above.
 function svcCsv_(eventId) {
-  requireStaff_(eventId, 'VIEWER');
+  requireStaff_(eventId, 'ADMIN');
   var head = ['reg_id', 'badge_code', 'full_name', 'email', 'phone', 'org', 'type', 'source', 'registered_at', 'status', 'checked_in_at', 'checked_in_by', 'gate'];
   var rows = regRowsFor_(eventId).map(function (r) {
     return [r.reg_id, r.badge_code, r.full_name, r.email, r.phone, r.org, r.type, r.source, r.registered_at, r.status, r.checked_in_at, r.checked_in_by, r.gate];

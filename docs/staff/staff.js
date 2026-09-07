@@ -385,7 +385,7 @@
       '<div class="topbar-right">' +
       '<div class="chip"><div class="chip-dot"></div><div class="chip-label">' + esc(synced) + "</div></div>" +
       '<button class="btn-ghost" data-act="refresh">REFRESH</button>' +
-      '<button class="btn-ghost" data-act="export">EXPORT CSV</button>' +
+      (can("ADMIN") ? '<button class="btn-ghost" data-act="export">EXPORT CSV</button>' : "") +
       "</div></div>";
   }
 
@@ -503,11 +503,16 @@
       return '<div class="trow">' +
         '<div class="c-grow2"><div class="cell-name">' + esc(r.name) + "</div>" +
         '<div class="cell-sub">' + esc(r.org || "") + (r.source === "walkin" ? " · WALK-IN" : "") + "</div></div>" +
-        '<div class="c-grow2"><div class="cell-sub" style="color:#cfc9bd">' + esc(r.email || "") + "</div>" +
-        '<div class="cell-mono">' + esc(r.phone || "") + "</div></div>" +
+        // Email/phone come back blank from the API for non-ADMIN roles
+        // (PDPA — door staff don't need contact info to do their job); the
+        // column itself is hidden here too rather than showing empty cells.
+        (can("ADMIN")
+          ? '<div class="c-grow2"><div class="cell-sub" style="color:#cfc9bd">' + esc(r.email || "") + "</div>" +
+            '<div class="cell-mono">' + esc(r.phone || "") + "</div></div>"
+          : "") +
         '<div class="c-code">' + esc(r.code) + "</div>" +
         '<div class="c-type">' +
-        (can("STAFF")
+        (can("ADMIN")
           ? '<button class="mini type-btn' + typeClass(r.type) + '" data-act="cycle-type" data-id="' + esc(r.regId) + '" data-type="' + esc(r.type || "") + '" title="กดเพื่อเปลี่ยนประเภทบัตร">' + esc(r.type || "—") + "</button>"
           : '<div class="tag"><div class="tag-label">' + esc(r.type || "—") + "</div></div>") +
         "</div>" +
@@ -720,9 +725,9 @@
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีทีมงาน</div>') + "</div>" +
       '<div class="card" style="padding:20px 22px;display:flex;flex-direction:column;gap:11px">' +
       '<div class="side-kicker">สิทธิ์แต่ละบทบาท</div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">ADMIN</span><span class="muted" style="margin-left:auto">ทุกอย่าง · จัดการฟิลด์ บัตร ทีม และลบข้อมูล</span></div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in</span></div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">VIEWER</span><span class="muted" style="margin-left:auto">ดูอย่างเดียว</span></div>' +
+      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">ADMIN</span><span class="muted" style="margin-left:auto">ทุกอย่าง · เปลี่ยนประเภทบัตร ดูอีเมล/เบอร์ export CSV จัดการฟิลด์ บัตร ทีม และลบข้อมูล</span></div>' +
+      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in · ไม่เห็นอีเมล/เบอร์ ไม่เปลี่ยนประเภทบัตรได้</span></div>' +
+      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">VIEWER</span><span class="muted" style="margin-left:auto">ดูอย่างเดียว · ไม่เห็นอีเมล/เบอร์</span></div>' +
       "</div></div>";
   }
 
