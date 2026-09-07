@@ -47,7 +47,9 @@ var SHEETS = {
 // and all data stay exactly as they are, it just stops appearing in the
 // PUBLIC listEvents() (the customer picker). Staff still see it (and can
 // un-hide it) via allEventsRows_() in svcBootstrap_.
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden'];
+// image_url: a public https image for the customer picker card / form banner
+// (falls back to the striped placeholder client-side when blank).
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -369,7 +371,7 @@ function allEventsRows_() {
       id: o.event_id, name: o.name, date: o.date_display, place: o.place,
       status: o.status_label, seats: o.seats_label, price: o.price_label,
       accent: o.accent, theme: o.theme, open: isTrue_(o.open), short: o.short_label,
-      hidden: isTrue_(o.hidden)
+      hidden: isTrue_(o.hidden), image: o.image_url || ''
     };
   });
 }
@@ -1075,6 +1077,7 @@ function svcSetEventProp_(p) {
     }
     if (p.open !== undefined) sh.getRange(i + 2, col.open).setValue(p.open === true || p.open === 'true');
     if (p.hidden !== undefined) sh.getRange(i + 2, col.hidden).setValue(p.hidden === true || p.hidden === 'true');
+    if (p.image !== undefined) sh.getRange(i + 2, col.image_url).setValue(String(p.image || ''));
     if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
     if (p.date) sh.getRange(i + 2, col.date_display).setValue(p.date);
     if (p.place) sh.getRange(i + 2, col.place).setValue(p.place);
