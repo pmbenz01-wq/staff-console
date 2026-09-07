@@ -137,7 +137,7 @@
   function ev() { return state.events.filter(function (e) { return e.id === state.eventId; })[0] || null; }
   function theme() { var e = ev(); return THEMES[e && e.theme] || THEMES.editorial; }
   function can(role) {
-    var rank = { VIEWER: 1, STAFF: 2, ADMIN: 3 };
+    var rank = { STAFF: 1, ADMIN: 2 };
     return state.me && (rank[state.me.role] || 0) >= (rank[role] || 0);
   }
   function flash(msg) {
@@ -311,7 +311,7 @@
       var who = f.split(":")[1] || "";
       body = "<p>บัญชี <code>" + esc(who) + "</code> ยังไม่อยู่ในรายชื่อทีมงาน</p>" +
         "<p><b>วิธีแก้:</b> เปิด Google Sheet ชื่อ <b>Event Check-in — Team Access</b> → แท็บ <code>Staff</code> → " +
-        "เพิ่มแถวใหม่: อีเมลนี้, ชื่อ, บทบาท (ADMIN / STAFF / VIEWER), ขอบเขต (<code>ALL</code> หรือรหัสงาน), ประตู</p>";
+        "เพิ่มแถวใหม่: อีเมลนี้, ชื่อ, บทบาท (ADMIN / STAFF), ขอบเขต (<code>ALL</code> หรือรหัสงาน), ประตู</p>";
     } else if (f.indexOf("team_access_not_configured") >= 0) {
       body = "<p>ยังไม่ได้สร้างไฟล์สิทธิ์ทีมงาน</p><p><b>วิธีแก้:</b> ใน Apps Script เลือกฟังก์ชัน " +
         "<code>setupTeamAccessSheet</code> แล้วกด Run หนึ่งครั้ง</p>";
@@ -696,7 +696,7 @@
     var scopePills = ['ALL'].concat(state.events.map(function (e) { return e.id; })).map(function (s) {
       return '<div class="pill' + (state.invite.scope === s ? " is-active" : "") + '" data-act="invite-scope" data-id="' + esc(s) + '">' + esc(s === 'ALL' ? 'ทุกงาน' : s) + "</div>";
     }).join("");
-    var rolePills = ['VIEWER', 'STAFF', 'ADMIN'].map(function (r) {
+    var rolePills = ['STAFF', 'ADMIN'].map(function (r) {
       return '<div class="pill' + (state.invite.role === r ? " is-active" : "") + '" data-act="invite-role" data-id="' + esc(r) + '">' + esc(r) + "</div>";
     }).join("");
 
@@ -726,8 +726,7 @@
       '<div class="card" style="padding:20px 22px;display:flex;flex-direction:column;gap:11px">' +
       '<div class="side-kicker">สิทธิ์แต่ละบทบาท</div>' +
       '<div class="row-line"><span style="color:#c9ac74;font-size:12px">ADMIN</span><span class="muted" style="margin-left:auto">ทุกอย่าง · เปลี่ยนประเภทบัตร ดูอีเมล/เบอร์ export CSV จัดการฟิลด์ บัตร ทีม และลบข้อมูล</span></div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in · ไม่เห็นอีเมล/เบอร์ ไม่เปลี่ยนประเภทบัตรได้</span></div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">VIEWER</span><span class="muted" style="margin-left:auto">ดูอย่างเดียว · ไม่เห็นอีเมล/เบอร์</span></div>' +
+      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in ดูรายชื่อ · ไม่เห็นอีเมล/เบอร์ ไม่เปลี่ยนประเภทบัตรได้</span></div>' +
       "</div></div>";
   }
 
@@ -1019,7 +1018,7 @@
       case "ne-theme": state.ne.theme = el.dataset.id; render(); break;
       case "ne-create": createEvent(); break;
       case "cycle-role": {
-        var order = ["VIEWER", "STAFF", "ADMIN"];
+        var order = ["STAFF", "ADMIN"];
         var next = order[(order.indexOf(el.dataset.role) + 1) % order.length];
         api("setRole", { email: el.dataset.id, role: next })
           .then(function () { flash("เปลี่ยนเป็น " + next); loadScreen(); })

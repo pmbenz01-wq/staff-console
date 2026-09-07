@@ -230,7 +230,7 @@ function seedStaff_(sh) {
     ['pimchanok@thinktech.co.th', 'พิมพ์ชนก ว.', 'ADMIN', 'ALL', 'ประตู A'],
     ['thanakrit@thinktech.co.th', 'ธนกฤต อ.', 'STAFF', 'tt', 'ประตู B'],
     ['yanisa@thinktech.co.th', 'ญาณิศา ร.', 'STAFF', 'tt', 'ประตู A'],
-    ['warintorn@partner.co', 'วรินทร ท.', 'VIEWER', 'lab', '—']
+    ['warintorn@partner.co', 'วรินทร ท.', 'STAFF', 'lab', '—']
   ];
   sh.getRange(2, 1, rows.length, STAFF_HEADERS.length).setValues(rows);
 }
@@ -521,7 +521,12 @@ function getMyPass(email) {
 // Fill in after creating the OAuth client (Google Cloud Console → Credentials).
 var GOOGLE_CLIENT_ID = '202833902564-rdob60vtlpt2bo9nvf0tdm7dmvaaqjvp.apps.googleusercontent.com';
 
-var ROLE_RANK = { VIEWER: 1, STAFF: 2, ADMIN: 3 };
+// Two tiers only — no read-only "VIEWER" role. Anyone on the team either
+// works the door (STAFF) or manages the event (ADMIN); there was no case for
+// giving someone the attendee list without also giving them a job to do
+// with it. A leftover 'VIEWER' (or any other unrecognized) role value in the
+// Team Access sheet ranks as 0 here, i.e. locked out of every action.
+var ROLE_RANK = { STAFF: 1, ADMIN: 2 };
 
 // Set for the duration of one staffCall_ request (see handle_ below), after
 // the caller's Google ID token has been verified. Apps Script executions are
@@ -546,7 +551,7 @@ function currentStaff_() {
   return {
     email: email,
     name: row.name || email,
-    role: String(row.role || 'VIEWER').toUpperCase(),
+    role: String(row.role || 'STAFF').toUpperCase(),
     scope: String(row.event_scope || ''),
     gate: row.gate || '—'
   };
@@ -597,7 +602,7 @@ function svc(action, p) {
       case 'dashboard': data = svcDashboard_(p.eventId); break;
       case 'checkin': data = svcCheckin_(p); break;
       case 'attendees': data = svcAttendees_(p.eventId, p.query); break;
-      case 'fields': requireStaff_(p.eventId, 'VIEWER'); data = getEventForm(p.eventId); break;
+      case 'fields': requireStaff_(p.eventId, 'STAFF'); data = getEventForm(p.eventId); break;
       case 'setCheckedIn': data = svcSetCheckedIn_(p); break;
       case 'setType': data = svcSetType_(p); break;
       case 'addWalkin': data = svcAddWalkin_(p); break;
@@ -652,7 +657,7 @@ function allBadgeConfigs_() {
 // Dashboard
 // ---------------------------------------------------------------------------
 function svcDashboard_(eventId) {
-  requireStaff_(eventId, 'VIEWER');
+  requireStaff_(eventId, 'STAFF');
   var regs = regRowsFor_(eventId);
   var total = regs.length;
   var checkedIn = regs.filter(function (r) { return r.status === 'checked_in'; }).length;
@@ -810,8 +815,8 @@ function logScan_(eventId, regId, badgeCode, name, staff, device, result, client
 // Attendees
 // ---------------------------------------------------------------------------
 function svcAttendees_(eventId, query) {
-  var staff = requireStaff_(eventId, 'VIEWER');
-  // Door/scanning staff (STAFF, VIEWER) can search by email/phone but don't
+  var staff = requireStaff_(eventId, 'STAFF');
+  // Door/scanning staff (STAFF) can search by email/phone but don't
   // get to see the raw values back — PDPA: minimize PII exposure to people
   // who only need name + badge code + status to do their job. Only ADMIN
   // sees full contact info.
@@ -955,7 +960,7 @@ function audit_(staff, action, eventId, targetId, detail) {
 // History + export
 // ---------------------------------------------------------------------------
 function svcHistory_(eventId, filter) {
-  requireStaff_(eventId, 'VIEWER');
+  requireStaff_(eventId, 'STAFF');
   var rows = checkinRowsFor_(eventId);
   if (filter && filter !== 'all') rows = rows.filter(function (c) { return c.result === filter; });
   return rows.slice(0, 300).map(function (c) {
@@ -1075,12 +1080,12 @@ function teamRows_() {
   var headers = rows.shift();
   return rows.filter(function (r) { return r[0]; }).map(function (r) {
     var o = rowToObj_(headers, r);
-    return { email: o.email, name: o.name, role: String(o.role || 'VIEWER').toUpperCase(), scope: o.event_scope, gate: o.gate };
+    return { email: o.email, name: o.name, role: String(o.role || 'STAFF').toUpperCase(), scope: o.event_scope, gate: o.gate };
   });
 }
 
 // ADMIN-only — the team roster (everyone's email, role, gate) is sensitive
-// enough that even read access shouldn't be VIEWER/STAFF-wide. This is the
+// enough that even read access shouldn't be STAFF-wide. This is the
 // real boundary; the "team" nav item is also hidden from non-admins in
 // staff.js, but that's UX only — this is what actually blocks it.
 function svcTeam_() {
@@ -1113,7 +1118,7 @@ function svcAddTeamMember_(p) {
   var staff = requireStaff_(null, 'ADMIN');
   var email = String(p.email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('invalid_email');
-  var role = String(p.role || 'VIEWER').toUpperCase();
+  var role = String(p.role || 'STAFF').toUpperCase();
   if (!ROLE_RANK[role]) throw new Error('bad_role');
   var name = String(p.name || '').trim() || email.split('@')[0];
   var scope = String(p.scope || 'ALL').trim() || 'ALL';
@@ -1132,7 +1137,7 @@ function svcAddTeamMember_(p) {
 
 // Everything the A6 print page needs for one attendee.
 function svcBadgeData_(p) {
-  requireStaff_(p.eventId, 'VIEWER');
+  requireStaff_(p.eventId, 'STAFF');
   var rows = regRowsFor_(p.eventId).filter(function (r) { return r.reg_id === p.regId; });
   if (!rows.length) throw new Error('not_found');
   var r = rows[0];
