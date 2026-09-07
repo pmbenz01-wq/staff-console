@@ -74,8 +74,10 @@
     recentScans: [],
     showWalkin: false,
     showNewEvent: false,
+    showInvite: false,
     ne: { name: "", date: "", place: "", theme: "editorial", error: "" },
     walkin: { name: "", email: "", phone: "", type: "ทั่วไป" },
+    invite: { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "" },
     newField: "",
     toast: "",
     busy: false
@@ -563,9 +565,35 @@
         '<div class="cell-sub" style="width:130px">' + esc(m.scope) + "</div></div>";
     }).join("");
 
+    var scopePills = ['ALL'].concat(state.events.map(function (e) { return e.id; })).map(function (s) {
+      return '<div class="pill' + (state.invite.scope === s ? " is-active" : "") + '" data-act="invite-scope" data-id="' + esc(s) + '">' + esc(s === 'ALL' ? 'ทุกงาน' : s) + "</div>";
+    }).join("");
+    var rolePills = ['VIEWER', 'STAFF', 'ADMIN'].map(function (r) {
+      return '<div class="pill' + (state.invite.role === r ? " is-active" : "") + '" data-act="invite-role" data-id="' + esc(r) + '">' + esc(r) + "</div>";
+    }).join("");
+
+    var invite = state.showInvite ? '<div class="walkin">' +
+      '<div class="modal-head"><div class="modal-title">เชิญเจ้าหน้าที่ด้วยอีเมล Google</div>' +
+      '<div class="modal-close" data-act="toggle-invite">ปิด ✕</div></div>' +
+      '<div class="field-row">' +
+      '<div class="field"><div class="field-label">อีเมล Google *</div><input id="inv-email" value="' + esc(state.invite.email) + '" placeholder="name@gmail.com" /></div>' +
+      '<div class="field"><div class="field-label">ชื่อแสดงผล</div><input id="inv-name" value="' + esc(state.invite.name) + '" placeholder="ไม่ใส่ก็ได้" /></div>' +
+      '<div class="field"><div class="field-label">ประตู/จุดประจำ</div><input id="inv-gate" value="' + esc(state.invite.gate) + '" placeholder="เช่น ประตู A" /></div>' +
+      "</div>" +
+      '<div><div class="side-kicker" style="margin-bottom:9px">บทบาท</div><div class="pills">' + rolePills + "</div></div>" +
+      '<div><div class="side-kicker" style="margin-bottom:9px">ขอบเขตงานที่เห็น</div><div class="pills">' + scopePills + "</div></div>" +
+      '<div class="err">' + esc(state.invite.error) + "</div>" +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+      '<button class="btn-light" data-act="save-invite">เพิ่มเข้าทีม</button>' +
+      '<div class="muted">คนนั้นต้องล็อกอินด้วยอีเมลนี้เป๊ะๆ ถึงจะเข้าได้ — แค่เพิ่มชื่อยังไม่ได้ตรวจสอบว่าอีเมลมีจริง</div></div></div>' : "";
+
     return '<div class="page" style="max-width:820px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap">' +
       '<div><div class="page-title">ทีมงานและสิทธิ์การเข้าถึง</div>' +
       '<div class="page-sub">เจ้าหน้าที่เข้าใช้งานด้วยบัญชี Google ของตนเอง · แก้ไขรายชื่อได้ในไฟล์ Team Access</div></div>' +
+      (can("ADMIN") ? '<button class="btn-gold" data-act="toggle-invite">+ เชิญเจ้าหน้าที่ด้วยอีเมล Google</button>' : "") +
+      "</div>" +
+      invite +
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีทีมงาน</div>') + "</div>" +
       '<div class="card" style="padding:20px 22px;display:flex;flex-direction:column;gap:11px">' +
       '<div class="side-kicker">สิทธิ์แต่ละบทบาท</div>' +
@@ -757,6 +785,9 @@
     bindInput("ne-name", state.ne, "name");
     bindInput("ne-date", state.ne, "date");
     bindInput("ne-place", state.ne, "place");
+    bindInput("inv-email", state.invite, "email");
+    bindInput("inv-name", state.invite, "name");
+    bindInput("inv-gate", state.invite, "gate");
     var nf = document.getElementById("new-field");
     if (nf) nf.addEventListener("input", function (e) { state.newField = e.target.value; });
 
@@ -800,6 +831,10 @@
         break;
       }
       case "save-walkin": saveWalkin(); break;
+      case "toggle-invite": state.showInvite = !state.showInvite; state.invite.error = ""; render(); break;
+      case "invite-role": state.invite.role = el.dataset.id; render(); break;
+      case "invite-scope": state.invite.scope = el.dataset.id; render(); break;
+      case "save-invite": saveInvite(); break;
       case "toggle-in": {
         var on = el.dataset.on === "1";
         api("setCheckedIn", { eventId: state.eventId, regId: el.dataset.id, on: on })
@@ -894,6 +929,24 @@
       flash("เพิ่มและเช็คอินแล้ว · " + r.badgeCode);
       loadScreen();
     }).catch(fail);
+  }
+
+  function saveInvite() {
+    var inv = state.invite;
+    if (!inv.email.trim()) { state.invite.error = "กรอกอีเมลก่อน"; render(); return; }
+    api("addTeamMember", {
+      email: inv.email.trim(), name: inv.name.trim(), role: inv.role, scope: inv.scope, gate: inv.gate.trim()
+    }).then(function (r) {
+      state.invite = { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "" };
+      state.showInvite = false;
+      flash("เพิ่ม " + r.email + " เป็น " + r.role + " แล้ว");
+      loadScreen();
+    }).catch(function (e) {
+      var m = String(e.message || e);
+      state.invite.error = m.indexOf("already_exists") >= 0 ? "อีเมลนี้อยู่ในทีมแล้ว" :
+        m.indexOf("invalid_email") >= 0 ? "รูปแบบอีเมลไม่ถูกต้อง" : m;
+      render();
+    });
   }
 
   function createEvent() {

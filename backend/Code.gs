@@ -472,6 +472,7 @@ function svc(action, p) {
       case 'setEventProp': data = svcSetEventProp_(p); break;
       case 'team': data = svcTeam_(); break;
       case 'setRole': data = svcSetRole_(p); break;
+      case 'addTeamMember': data = svcAddTeamMember_(p); break;
       case 'badgeData': data = svcBadgeData_(p); break;
       default: return { ok: false, error: 'unknown_action:' + action };
     }
@@ -936,6 +937,30 @@ function svcSetRole_(p) {
     }
   }
   throw new Error('not_found');
+}
+
+// Adds a brand-new row to the Team Access allowlist. The person still has to
+// sign in with that exact Google account themselves — this only pre-approves
+// the email; it can't create or verify a Google identity on its own.
+function svcAddTeamMember_(p) {
+  var staff = requireStaff_(null, 'ADMIN');
+  var email = String(p.email || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('invalid_email');
+  var role = String(p.role || 'VIEWER').toUpperCase();
+  if (!ROLE_RANK[role]) throw new Error('bad_role');
+  var name = String(p.name || '').trim() || email.split('@')[0];
+  var scope = String(p.scope || 'ALL').trim() || 'ALL';
+  var gate = String(p.gate || '—').trim() || '—';
+
+  var sh = getStaffSheet_();
+  var rows = sh.getDataRange().getValues();
+  var headers = rows.shift();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).toLowerCase() === email) throw new Error('already_exists');
+  }
+  sh.appendRow([email, name, role, scope, gate]);
+  audit_(staff, 'addTeamMember', '', email, role + ' · ' + scope);
+  return { ok: true, email: email, name: name, role: role, scope: scope, gate: gate };
 }
 
 // Everything the A6 print page needs for one attendee.
