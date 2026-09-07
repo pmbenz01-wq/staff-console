@@ -1,33 +1,47 @@
 # Backend — Google Sheet + Apps Script
 
-Three files go into one Apps Script project:
+Four files go into one Apps Script project:
 
 | File | What it is |
 |---|---|
 | `Code.gs` | All server code — the public JSON API **and** the staff `svc()` API |
-| `Staff.html` | The Staff Console page (a thin shell; the UI loads from GitHub Pages) |
-| `Badge.html` | The A6 badge print page |
+| `Staff.html` | Legacy Apps-Script-hosted console shell — kept working, but the Vercel-hosted `staff/index.html` is the one staff actually use now |
+| `Badge.html` | The A6 badge print page — still Apps-Script-hosted, see below |
 
-**Public API** (customer site, no login): `listEvents`, `getEventForm`, `register`,
-`getMyPass` — served from `doGet`/`doPost` as JSON.
+**Public API** (no login): `listEvents`, `getEventForm`, `register`, `getMyPass`,
+and now **`staffCall`** too — served from `doGet`/`doPost` as JSON on the
+**customer ("Anyone")** deployment.
 
-**Staff API** (Google login required): `bootstrap`, `dashboard`, `checkin`,
-`attendees`, `fields`, `setCheckedIn`, `addWalkin`, `deleteAttendee`, `history`,
-`csv`, `saveFields`, `saveBadgeConfig`, `createEvent`, `setEventProp`, `team`,
-`setRole`, `badgeData` — all behind the single `svc()` entry point, called from
-the console via `google.script.run`, never over HTTP.
+**Staff API** (`bootstrap`, `dashboard`, `checkin`, `attendees`, `fields`,
+`setCheckedIn`, `addWalkin`, `deleteAttendee`, `history`, `csv`, `saveFields`,
+`saveBadgeConfig`, `createEvent`, `setEventProp`, `team`, `setRole`,
+`addTeamMember`, `badgeData`) all live behind one `svc()` entry point. There
+are two ways in:
+- **`staffCall`** (current) — the Vercel-hosted console calls this over plain
+  HTTP with a Google ID token in the body. `verifyIdToken_()` checks it
+  against Google directly; the verified email is what `svc()`'s calls
+  authorize against, never anything the client claims.
+- **`google.script.run`** (legacy) — only works from `Staff.html` itself,
+  same-origin inside Apps Script's HtmlService, riding on
+  `Session.getActiveUser()`. Still there as a fallback; not what's deployed
+  to staff day to day.
 
-## Why the Staff Console is served by Apps Script, not GitHub Pages
+## Why identity moved to an OAuth ID token
 
-Google sign-in is the whole point of the staff side — every check-in has to record
-*who* scanned it. That only works if the page runs on the same origin as the script:
-`Session.getActiveUser().getEmail()` is populated, and `google.script.run` needs no
-CORS. A staff page hosted on GitHub Pages calling a login-required Apps Script URL
-would be redirected to Google's login page and blocked by CORS.
+The original design served `Staff.html` from Apps Script specifically so
+`Session.getActiveUser()` would work — same-origin, no CORS. That produced a
+real problem: the only URL staff had was the long
+`script.google.com/macros/s/.../exec` one, painful to type or share with a
+whole team, and `Session.getActiveUser()` doesn't always come back populated
+even when signed in (see the `no_identity` message in the console — this
+still exists as a fallback path).
 
-So `Staff.html` is served by Apps Script — but it's deliberately a thin shell that
-loads `staff.css` / `staff.js` from GitHub Pages. **UI changes are a `git push`;
-only `Code.gs` changes need a redeploy.**
+The fix is to host the console UI wherever's convenient (Vercel, short URL)
+and stop depending on same-origin session tricks for identity. Google
+Identity Services gives the page a **signed ID token** after sign-in; the
+backend verifies that token itself via Google's `tokeninfo` endpoint
+(checking `aud` matches our OAuth client and `email_verified`) rather than
+trusting a session that cookies can't carry cross-origin anyway.
 
 ## Deploy
 
@@ -45,10 +59,11 @@ only `Code.gs` changes need a redeploy.**
    - Execute as: **Me**
    - Who has access: **Anyone**
    - Copy the resulting `/exec` URL.
-5. Paste that URL into `../customer/config.js` as `API_URL`.
+5. Paste that URL into the **events-checkin** repo's `customer/config.js` as
+   `API_URL` (that repo is the public registration site; this repo doesn't hold it).
 6. Optional but recommended — in **Project Settings → Script properties**, add
-   `CUSTOMER_SITE_URL` pointing at wherever you host the `customer/` folder, so the
-   confirmation email's reopen link actually works.
+   `CUSTOMER_SITE_URL` pointing at the deployed customer site, so the confirmation
+   email's reopen link actually works.
 7. Also run `setupTeamAccessSheet` (once) from the same function dropdown. This
    creates a **second, separate** Google Sheet file — "Event Check-in — Team
    Access" — holding just the `Staff` allowlist (email, name, role, event
@@ -57,25 +72,50 @@ only `Code.gs` changes need a redeploy.**
    "Team access is a separate file" below.
 
 Redeploy (**Deploy → Manage deployments → Edit → New version**) after any code change —
-editing `Code.gs` alone doesn't update the live `/exec` URL's behavior.
+editing `Code.gs` alone doesn't update the live `/exec` URL's behavior. **`staffCall`
+runs on this deployment** (the "Anyone" one), so a `Code.gs` change that touches any
+staff-side function needs this one redeployed too, not just deploy #2 below.
 
-## Deploy #2 — the Staff Console
+## Enabling the Vercel-hosted console (Google Sign-In)
 
-The same project gets a **second** deployment, with different access settings. This
-is what staff open in a browser.
+This is what makes staff.js's sign-in screen actually work — without it, every
+sign-in attempt fails with `google_client_id_not_configured`.
+
+1. **Google Cloud Console → APIs & Services → Credentials.**
+2. If prompted, configure the OAuth consent screen first: User type **External**,
+   fill in an app name + support email, save. Testing mode is fine — add each
+   staff member's email under **Test users**, or publish the app if you'd rather
+   skip that list.
+3. **+ Create Credentials → OAuth client ID** → Application type **Web application**.
+4. **Authorized JavaScript origins** → add the Vercel URL this repo deploys to
+   (e.g. `https://staff-console-teal.vercel.app`). No redirect URI needed — the
+   sign-in button flow doesn't use one.
+5. Copy the resulting Client ID (`xxxx.apps.googleusercontent.com` — not a secret,
+   safe to commit in frontend code) into **two places**, exactly matching:
+   - `GOOGLE_CLIENT_ID` in `Code.gs`
+   - `GOOGLE_CLIENT_ID` in `staff/config.js`
+6. Also fill `APPS_SCRIPT_URL` in `staff/config.js` with the **customer/"Anyone"**
+   `/exec` URL from step 4 above (not the deploy-#2 URL below).
+7. Push `Code.gs` (re-paste + redeploy deploy #1, the "Anyone" one — see above) and
+   `staff/config.js` (`git push`, Vercel picks it up automatically).
+
+## Deploy #2 — legacy Apps-Script-hosted console (Badge.html needs this)
+
+Staff no longer use this URL day to day — the Vercel-hosted `staff/index.html` is
+the real console now. This deployment stays for two things: `Badge.html` (the A6
+print page, still session-based — see `printUrl()` in `staff.js`) and as a fallback
+if you ever need the old same-origin path.
 
 1. **Deploy → New deployment → Web app** again:
    - Execute as: **Me**
    - Who has access: **Anyone with a Google account** ← different from deploy #1
 2. Open that `/exec` URL while signed in with a Google account that is listed in the
-   **Team Access** sheet. You should land on the console.
-3. Give the URL to your staff. Anyone not on the allowlist gets a clear "you're not
-   on the team list" screen naming the exact row they need added.
+   **Team Access** sheet. You should land on the legacy console (or, for Badge.html,
+   a printable badge).
 
-**If the console says Google didn't send your email:** the deployment can't identify
-the visitor. Edit that deployment to `Execute as: User accessing the web app` and
-share the Google Sheet with each staff member (Viewer is enough). The console's error
-screen spells this out too.
+**If it says Google didn't send your email:** the deployment can't identify the
+visitor. Edit it to `Execute as: User accessing the web app` and share the Google
+Sheet with each staff member (Viewer is enough).
 
 **Gate names** come from the `gate` column of the Team Access sheet — that's what gets
 written on every check-in, so set it per person before the event.
@@ -91,12 +131,12 @@ referenced by ID (`STAFF_SHEET_ID` in Script Properties) via
 bound to. Share the two files with different people/groups in Google Drive as
 your access rules require.
 
-This is scaffolding, not a finished feature: `findStaffByEmail_()` looks a
-person up by email and returns their `role`/`event_scope`/`gate`, but nothing
-calls it yet — no staff-only endpoint exists in this file. When the Staff
-Console backend is built, its `checkin`/`searchAttendees`/etc. handlers should
-call `findStaffByEmail_(Session.getActiveUser().getEmail())` to authorize,
-per the handoff doc's rule that role must never be trusted from the client.
+`findStaffByEmail_()` looks a person up by email and returns their
+`role`/`event_scope`/`gate`. Every staff-side call goes through
+`currentStaff_()` -> `findStaffByEmail_()` (see `requireStaff_()`), whether the
+email came from a verified OAuth ID token (`staffCall`) or
+`Session.getActiveUser()` (legacy `google.script.run` path) — per the handoff
+doc's rule that role must never be trusted from the client.
 
 ## Notes / deliberate scope trims
 
@@ -111,8 +151,10 @@ per the handoff doc's rule that role must never be trusted from the client.
   expiring-token scheme later if cross-device reopen-by-link (not just by typing
   an email) becomes a requirement.
 - **Custom per-event fields**: `Fields`/`getEventForm` exist per the handoff
-  doc's endpoint table, but the shipped Customer design has a fixed 5-question
-  flow (name → email → phone → org → type) — it doesn't render fields
+  doc's endpoint table, but the shipped Customer design has a fixed 4-question
+  flow (name -> email -> phone -> org, PDPA consent folded into the last step
+  — pass type is no longer asked there at all; staff assign it from the
+  console) — it doesn't render fields
   dynamically. The customer frontend doesn't call `getEventForm` for that
   reason; it's here for the Staff Console (or a future dynamic-fields version
   of this page) to use.
