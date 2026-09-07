@@ -347,10 +347,19 @@
   }
 
   function renderSide() {
+    // Hidden events are archived: kept fully intact (data, files, badge
+    // config — nothing deleted) but dropped from the public customer picker.
+    // Staff still see them here, dimmed, with an ADMIN-only toggle to
+    // un-hide. See svcSetEventProp_'s `hidden` handling.
     var evs = state.events.map(function (e) {
-      return '<div class="ev' + (e.id === state.eventId ? " is-active" : "") + '" data-act="pick-event" data-id="' + esc(e.id) + '">' +
-        '<div class="ev-name">' + esc(e.name) + "</div>" +
-        '<div class="ev-meta">' + esc(e.date || "") + "</div></div>";
+      return '<div class="ev' + (e.id === state.eventId ? " is-active" : "") + (e.hidden ? " is-hidden" : "") + '">' +
+        '<div data-act="pick-event" data-id="' + esc(e.id) + '" style="cursor:pointer;flex:1;min-width:0">' +
+        '<div class="ev-name">' + esc(e.name) + (e.hidden ? " · ซ่อนจากลูกค้า" : "") + "</div>" +
+        '<div class="ev-meta">' + esc(e.date || "") + "</div></div>" +
+        (can("ADMIN")
+          ? '<div class="ev-hide" data-act="toggle-hidden" data-id="' + esc(e.id) + '" data-hidden="' + (e.hidden ? "0" : "1") + '" title="' + (e.hidden ? "แสดงงานนี้ให้ลูกค้าเห็นอีกครั้ง" : "ซ่อนงานนี้จากหน้าลูกค้า (ข้อมูลเดิมยังอยู่ครบ)") + '">' + (e.hidden ? "แสดง" : "ซ่อน") + "</div>"
+          : "") +
+        "</div>";
     }).join("");
 
     // Team & roles is ADMIN-only — hidden here, and rejected by svcTeam_ on
@@ -940,6 +949,16 @@
         render(); loadScreen();
         break;
       case "refresh": loadScreen(); flash("อัปเดตแล้ว"); break;
+      case "toggle-hidden": {
+        var willHide = el.dataset.hidden === "1";
+        api("setEventProp", { eventId: el.dataset.id, hidden: willHide }).then(function () {
+          var found = state.events.filter(function (x) { return x.id === el.dataset.id; })[0];
+          if (found) found.hidden = willHide;
+          flash(willHide ? "ซ่อนจากหน้าลูกค้าแล้ว — ข้อมูลเดิมยังอยู่ครบ" : "แสดงให้ลูกค้าเห็นอีกครั้งแล้ว");
+          render();
+        }).catch(fail);
+        break;
+      }
       case "export": doExport(); break;
       case "manual-checkin": {
         var input = document.getElementById("manual-code");

@@ -63,12 +63,15 @@ input::placeholder{color:var(--placeholder)}
 .evbox-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .evbox-label{font:600 9px Prompt,sans-serif;letter-spacing:.2em;color:var(--muted)}
 .evbox-add{font:600 13px Prompt,sans-serif;color:var(--accent);cursor:pointer;line-height:1}
-.ev{cursor:pointer;padding:9px 11px;border:1px solid var(--line-soft);background:transparent;display:flex;flex-direction:column;gap:2px}
+.ev{padding:9px 11px;border:1px solid var(--line-soft);background:transparent;display:flex;align-items:center;gap:8px}
 .ev:hover{border-color:var(--line)}
 .ev.is-active{border-color:var(--accent);background:var(--accent-soft)}
+.ev.is-hidden{opacity:.55}
 .ev-name{font:400 12px/1.3 Prompt,sans-serif;color:var(--ink-soft)}
 .ev.is-active .ev-name{color:var(--ink)}
 .ev-meta{font:400 9px Prompt,sans-serif;color:var(--muted);letter-spacing:.06em}
+.ev-hide{flex:none;font:500 8.5px Prompt,sans-serif;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);padding:4px 8px;cursor:pointer;white-space:nowrap}
+.ev-hide:hover{border-color:var(--accent);color:var(--accent)}
 .ev-new{border:1px dashed var(--line);color:var(--ink-soft);padding:9px 11px;font:300 11.5px Prompt,sans-serif;cursor:pointer;text-align:center}
 .ev-new:hover{border-color:var(--accent);color:var(--accent)}
 
