@@ -9,6 +9,6 @@
 //      Credentials → OAuth client ID (Web application). Must match the
 //      GOOGLE_CLIENT_ID constant in backend/Code.gs exactly.
 window.APP_CONFIG = {
-  APPS_SCRIPT_URL: "REPLACE_WITH_YOUR_APPS_SCRIPT_WEB_APP_URL",
-  GOOGLE_CLIENT_ID: "REPLACE_WITH_YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+  APPS_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbyY8ZP9wDvr1m7ru5GpAMobmBsyHQH-A3AfjVP2aaRR23LZVS6AzPPMsKwX_FpMluE1/exec",
+  GOOGLE_CLIENT_ID: "202833902564-rdob60vtlpt2bo9nvf0tdm7dmvaaqjvp.apps.googleusercontent.com"
 };

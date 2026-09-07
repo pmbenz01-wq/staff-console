@@ -519,7 +519,7 @@ function getMyPass(email) {
 // ===========================================================================
 
 // Fill in after creating the OAuth client (Google Cloud Console → Credentials).
-var GOOGLE_CLIENT_ID = 'REPLACE_WITH_YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com';
+var GOOGLE_CLIENT_ID = '202833902564-rdob60vtlpt2bo9nvf0tdm7dmvaaqjvp.apps.googleusercontent.com';
 
 var ROLE_RANK = { VIEWER: 1, STAFF: 2, ADMIN: 3 };
 
