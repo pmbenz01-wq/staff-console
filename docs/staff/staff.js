@@ -373,7 +373,7 @@
       '<div class="side-foot"><div class="avatar">' + esc((me.name || "?").slice(0, 1)) + "</div>" +
       '<div class="side-me"><div class="side-me-name">' + esc(me.name || "") + "</div>" +
       '<div class="side-me-role">' + esc(me.role || "") + " · " + esc(me.gate || "") + "</div></div>" +
-      '<div class="mono" data-act="sign-out" style="margin-left:auto;font-size:9.5px;color:#6f6a5f;cursor:pointer">ออก</div></div></div>';
+      '<div class="mono" data-act="sign-out" style="margin-left:auto;font-size:9.5px;color:var(--muted);cursor:pointer">ออก</div></div></div>';
   }
 
   function renderTop() {
@@ -490,7 +490,7 @@
       '<button class="btn-ghost" data-act="nav" data-id="list" style="padding:12px">ค้นหาด้วยชื่อแทน</button>' +
       "</div>" +
       '<div class="phone-foot"><div class="phone-foot-line"><span>' + esc((state.me && state.me.name) || "") + "</span>" +
-      '<span style="color:#c9ac74">' + state.recentScans.filter(function (s) { return s.result === "ok"; }).length + " สแกน</span></div>" +
+      '<span style="color:var(--accent)">' + state.recentScans.filter(function (s) { return s.result === "ok"; }).length + " สแกน</span></div>" +
       '<div class="muted">ทุกการสแกนบันทึกชื่อเจ้าหน้าที่คนนี้ลง Google Sheet</div></div>' +
       "</div></div>" +
       '<div class="scan-result"><div class="side-kicker">ผลการสแกนล่าสุด</div>' + card + recent + "</div></div>";
@@ -507,7 +507,7 @@
         // (PDPA — door staff don't need contact info to do their job); the
         // column itself is hidden here too rather than showing empty cells.
         (can("ADMIN")
-          ? '<div class="c-grow2"><div class="cell-sub" style="color:#cfc9bd">' + esc(r.email || "") + "</div>" +
+          ? '<div class="c-grow2"><div class="cell-sub" style="color:var(--ink-soft)">' + esc(r.email || "") + "</div>" +
             '<div class="cell-mono">' + esc(r.phone || "") + "</div></div>"
           : "") +
         '<div class="c-code">' + esc(r.code) + "</div>" +
@@ -542,7 +542,7 @@
       '<div class="muted">สร้างรหัสบัตรใหม่และเช็คอินให้ทันทีในขั้นตอนเดียว</div></div></div>' : "";
 
     return '<div class="page">' +
-      '<div class="toolbar"><div class="search"><div class="mono" style="color:#6f6a5f">⌕</div>' +
+      '<div class="toolbar"><div class="search"><div class="mono" style="color:var(--muted)">⌕</div>' +
       '<input id="q" value="' + esc(state.query) + '" placeholder="ค้นหาชื่อ อีเมล เบอร์โทร หรือรหัสบัตร" autocomplete="off" /></div>' +
       (can("STAFF") ? '<button class="btn-gold" data-act="toggle-walkin">+ WALK-IN</button>' : "") + "</div>" +
       walkin +
@@ -564,12 +564,12 @@
     var rows = state.history.map(function (h) {
       var ok = h.result === "ok";
       return '<div class="trow"><div style="width:104px;flex:none" class="mono' + '" >' +
-        '<div style="font-size:9.5px;color:#8b8578">' + esc(h.date) + "</div>" +
-        '<div style="font-size:9.5px;color:#8b8578">' + esc(h.time) + "</div></div>" +
+        '<div style="font-size:9.5px;color:var(--ink-soft)">' + esc(h.date) + "</div>" +
+        '<div style="font-size:9.5px;color:var(--ink-soft)">' + esc(h.time) + "</div></div>" +
         '<div class="c-grow2"><div class="cell-name">' + esc(h.name) + "</div>" +
         '<div class="cell-mono">' + esc(h.device || "") + "</div></div>" +
         '<div class="c-code">' + esc(h.code) + "</div>" +
-        '<div class="c-grow1"><div class="cell-sub" style="color:#cfc9bd">' + esc(h.by) + "</div>" +
+        '<div class="c-grow1"><div class="cell-sub" style="color:var(--ink-soft)">' + esc(h.by) + "</div>" +
         '<div class="cell-mono">' + esc(h.gate || "") + "</div></div>" +
         '<div style="width:88px;flex:none;display:flex;justify-content:flex-end">' +
         '<div class="tag' + (ok ? " is-in" : "") + '"><div class="tag-label">' + esc(h.result) + "</div></div></div></div>";
@@ -590,7 +590,7 @@
   // ---------------------------------------------------------------------
   function renderFields() {
     var rows = state.fields.map(function (f, i) {
-      return '<div class="trow"><div class="mono" style="width:22px;color:#6f6a5f">' + (i + 1) + "</div>" +
+      return '<div class="trow"><div class="mono" style="width:22px;color:var(--muted)">' + (i + 1) + "</div>" +
         '<div class="c-grow1"><div class="cell-name">' + esc(f.label) + "</div>" +
         '<div class="cell-mono">' + esc(f.type || "TEXT") + "</div></div>" +
         '<button class="mini" data-act="field-req" data-i="' + i + '">' + (f.required ? "จำเป็น" : "ไม่บังคับ") + "</button>" +
@@ -599,24 +599,24 @@
 
     var preview = state.fields.map(function (f) {
       return '<div class="field"><div class="field-label">' + esc(f.label) + (f.required ? " *" : "") + "</div>" +
-        '<div style="font:300 14px Anuphan,sans-serif;color:#575349;margin-top:4px">' + esc(f.type === "EMAIL" ? "name@company.com" : f.type === "PHONE" ? "08X XXX XXXX" : "…") + "</div></div>";
+        '<div style="font:300 14px Prompt,sans-serif;color:var(--placeholder);margin-top:4px">' + esc(f.type === "EMAIL" ? "name@company.com" : f.type === "PHONE" ? "08X XXX XXXX" : "…") + "</div></div>";
     }).join("");
 
     return '<div class="split"><div class="split-main">' +
       '<div><div class="page-title">ฟิลด์ในฟอร์มลงทะเบียน</div>' +
       '<div class="page-sub">ตั้งค่าแยกตามแต่ละงาน · เพิ่ม ลบ หรือกำหนดว่าฟิลด์ใดจำเป็น แล้วกดบันทึก<br>' +
-      '<b style="color:#c9ac74">หมายเหตุ:</b> ตอนนี้บันทึกลงชีตแล้ว แต่หน้าลูกค้ายังใช้ฟอร์ม 5 ขั้นแบบตายตัวอยู่ ' +
+      '<b style="color:var(--accent)">หมายเหตุ:</b> ตอนนี้บันทึกลงชีตแล้ว แต่หน้าลูกค้ายังใช้ฟอร์ม 5 ขั้นแบบตายตัวอยู่ ' +
       'จะเชื่อมให้ฟอร์มลูกค้าอ่านฟิลด์ชุดนี้จริงในขั้นถัดไป</div></div>' +
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีฟิลด์</div>') +
       '<div style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
       '<input id="new-field" value="' + esc(state.newField) + '" placeholder="ชื่อฟิลด์ใหม่ เช่น ตำแหน่งงาน" ' +
-      'style="flex:1;min-width:170px;background:#17150f;border:1px solid #302c26;outline:none;padding:11px 13px;font:300 12.5px Anuphan,sans-serif" />' +
-      '<button class="btn-ghost" data-act="field-add" style="border-color:#c9ac74;color:#c9ac74;padding:11px 16px">+ เพิ่มฟิลด์</button></div></div>' +
+      'style="flex:1;min-width:170px;background:var(--sunken);border:1px solid var(--line);outline:none;padding:11px 13px;font:300 12.5px Prompt,sans-serif" />' +
+      '<button class="btn-ghost" data-act="field-add" style="border-color:var(--accent);color:var(--accent);padding:11px 16px">+ เพิ่มฟิลด์</button></div></div>' +
       (can("ADMIN") ? '<div><button class="btn-gold" data-act="fields-save">บันทึกฟิลด์ของงานนี้</button></div>' : '<div class="muted">ต้องเป็น ADMIN จึงจะบันทึกได้</div>') +
       "</div>" +
       '<div class="split-side"><div class="side-kicker">พรีวิวหน้าลูกค้า</div>' +
       '<div class="card" style="padding:24px 22px;display:flex;flex-direction:column;gap:18px">' +
-      '<div><div class="mono" style="font-size:9.5px;letter-spacing:.26em;color:#c9ac74">' + esc((ev() || {}).short || "") + "</div>" +
+      '<div><div class="mono" style="font-size:9.5px;letter-spacing:.26em;color:var(--accent)">' + esc((ev() || {}).short || "") + "</div>" +
       '<div class="serif" style="font-size:25px;font-weight:200;line-height:1.2;margin-top:11px">กรอกข้อมูล<br>เพื่อรับ QR</div></div>' +
       preview +
       '<div class="btn-gold" style="padding:14px 0">ยืนยันการลงทะเบียน</div></div></div></div>';
@@ -668,12 +668,12 @@
       '<div class="card" style="padding:20px 22px;display:flex;flex-direction:column;gap:18px">' +
       '<div style="display:flex;flex-direction:column;gap:10px"><div class="side-kicker">ขนาดบัตร</div>' +
       '<div class="pills">' + sizes + "</div></div>" +
-      '<div style="height:1px;background:#241f1b"></div>' +
+      '<div style="height:1px;background:var(--line-soft)"></div>' +
       '<div style="display:flex;flex-direction:column;gap:10px"><div class="side-kicker">องค์ประกอบที่พิมพ์</div>' + toggles + "</div>" +
-      '<div style="height:1px;background:#241f1b"></div>' +
+      '<div style="height:1px;background:var(--line-soft)"></div>' +
       '<div style="display:flex;flex-direction:column;gap:11px">' +
       '<div style="display:flex;justify-content:space-between;align-items:baseline"><div class="side-kicker">ธีมสีของงานนี้</div>' +
-      '<div class="mono" style="font-size:9.5px;color:#c9ac74">' + esc(th.label) + "</div></div>" +
+      '<div class="mono" style="font-size:9.5px;color:var(--accent)">' + esc(th.label) + "</div></div>" +
       '<div class="pills">' + themeCards + "</div></div></div>" +
       (can("ADMIN") ? '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
         '<button class="btn-gold" data-act="badge-save">บันทึกค่าบัตรของงานนี้</button></div>' : '<div class="muted">ต้องเป็น ADMIN จึงจะบันทึกได้</div>') +
@@ -725,8 +725,8 @@
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีทีมงาน</div>') + "</div>" +
       '<div class="card" style="padding:20px 22px;display:flex;flex-direction:column;gap:11px">' +
       '<div class="side-kicker">สิทธิ์แต่ละบทบาท</div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">ADMIN</span><span class="muted" style="margin-left:auto">ทุกอย่าง · เปลี่ยนประเภทบัตร ดูอีเมล/เบอร์ export CSV จัดการฟิลด์ บัตร ทีม และลบข้อมูล</span></div>' +
-      '<div class="row-line"><span style="color:#c9ac74;font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in ดูรายชื่อ · ไม่เห็นอีเมล/เบอร์ ไม่เปลี่ยนประเภทบัตรได้</span></div>' +
+      '<div class="row-line"><span style="color:var(--accent);font-size:12px">ADMIN</span><span class="muted" style="margin-left:auto">ทุกอย่าง · เปลี่ยนประเภทบัตร ดูอีเมล/เบอร์ export CSV จัดการฟิลด์ บัตร ทีม และลบข้อมูล</span></div>' +
+      '<div class="row-line"><span style="color:var(--accent);font-size:12px">STAFF</span><span class="muted" style="margin-left:auto">สแกน เช็คอิน Walk-in ดูรายชื่อ · ไม่เห็นอีเมล/เบอร์ ไม่เปลี่ยนประเภทบัตรได้</span></div>' +
       "</div></div>";
   }
 
