@@ -2,21 +2,31 @@
  * Event Check-in — Apps Script backend for the customer-facing site.
  *
  * Implements the public endpoints from "Handoff - Google Sheet และ Apps Script":
- *   listEvents   (addition — needed by the event picker, not itemised in the handoff
- *                 doc's endpoint table but required by the same "public" architecture)
- *   getEventForm
- *   register
- *   getMyPass
+ *   listEvents, getEventForm, register, getMyPass
  *
  * The Staff Console lives in the same project but does NOT go through this
- * JSON API: it is served as HTML (Staff.html) and calls the svc() entry point
- * via google.script.run — same origin, so Google sign-in works and there is no
- * CORS. See the "STAFF CONSOLE API" section at the bottom.
+ * JSON API: it is a Vercel-hosted page calling the svc() entry point via the
+ * 'staffCall' action (Google ID token auth) — see the "STAFF CONSOLE API"
+ * section at the bottom. A legacy same-origin Apps-Script-hosted path
+ * (Staff.html + google.script.run) still works as a fallback.
  *
- * Team access (Staff allowlist: who, what role, which events) lives in a
- * SEPARATE spreadsheet file from customer data — see the "Team access" section
- * below and setupTeamAccessSheet(). requireStaff_() is the single gate every
- * staff call passes through.
+ * DATA TOPOLOGY — one file per event, plus two shared files:
+ *   - THIS file (whatever Code.gs is bound to) is the "Overview" file: a
+ *     central Events registry (event_id -> which file holds that event's
+ *     detail data, plus display metadata), BadgeConfig, AuditLog, and a
+ *     live-mirrored AllRegistrations table (written by register(), read by
+ *     getMyPass() for the cross-event "find my pass by email" lookup — that
+ *     lookup has to stay fast, so it reads this mirror instead of opening
+ *     every event's file).
+ *   - Each EVENT gets its own spreadsheet file (created by createEventFile_),
+ *     holding just that event's Fields, Registrations, and Checkins — see
+ *     eventFileId_()/openEventFile_(). This is what makes per-event access
+ *     control possible (Drive sharing is per-file); see backend/README.md
+ *     for what that does and doesn't automate.
+ *   - Team access (Staff allowlist) lives in its own separate file — see the
+ *     "Team access" section below and setupTeamAccessSheet().
+ *
+ * requireStaff_() is the single gate every staff call passes through.
  *
  * Deploy: see README.md in this folder.
  */
@@ -27,10 +37,13 @@ var SHEETS = {
   REGISTRATIONS: 'Registrations',
   CHECKINS: 'Checkins',
   BADGE: 'BadgeConfig',
-  AUDIT: 'AuditLog'
+  AUDIT: 'AuditLog',
+  ALL_REG: 'AllRegistrations'
 };
 
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label'];
+// spreadsheet_id: which per-event file holds this event's Fields/
+// Registrations/Checkins — see eventFileId_()/openEventFile_()/createEventFile_().
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -49,15 +62,21 @@ var AUDIT_HEADERS = ['log_id', 'at', 'actor', 'action', 'event_id', 'target_id',
 function setupSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEETS.EVENTS, EVENTS_HEADERS);
-  ensureSheet_(ss, SHEETS.FIELDS, FIELDS_HEADERS);
-  ensureSheet_(ss, SHEETS.REGISTRATIONS, REG_HEADERS);
-  ensureSheet_(ss, SHEETS.CHECKINS, CHECKIN_HEADERS);
+  migrateHeaders_(ss.getSheetByName(SHEETS.EVENTS), EVENTS_HEADERS);
   ensureSheet_(ss, SHEETS.BADGE, BADGE_HEADERS);
   ensureSheet_(ss, SHEETS.AUDIT, AUDIT_HEADERS);
-  seedEvents_();
-  seedFields_();
+  ensureSheet_(ss, SHEETS.ALL_REG, REG_HEADERS);
+  seedDemoEvents_();
   seedBadgeConfig_();
   ensureQrSecret_();
+  // Fields/Registrations/Checkins used to live in this (bound) file; they now
+  // live per-event (see createEventFile_). Drop the old shared tabs now that
+  // seedDemoEvents_ has moved every event onto its own file — pre-launch,
+  // there's no live data in them worth preserving.
+  ['Fields', 'Registrations', 'Checkins'].forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (sh) ss.deleteSheet(sh);
+  });
   Logger.log('Setup complete. Sheets ready, QR secret ' + (PropertiesService.getScriptProperties().getProperty('QR_SECRET') ? 'present' : 'MISSING'));
 }
 
@@ -68,34 +87,86 @@ function ensureSheet_(ss, name, headers) {
   return sh;
 }
 
-function seedEvents_() {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
-  if (sh.getLastRow() > 1) return; // already seeded
-  var rows = [
-    ['tt', 'ThinkTech Summit 2026', '18–19 ธ.ค. 2569', 'ไบเทค บางนา · ฮอลล์ 2', 'เปิดรับ', 'เหลือ 240 ที่', 'ไม่มีค่าใช้จ่าย', '#d8482b', 'editorial', true, 'THINKTECH SUMMIT · 2026'],
-    ['gala', 'Annual Partner Gala', '24 ธ.ค. 2569', 'ดุสิตธานี · แกรนด์บอลรูม', 'เชิญเท่านั้น', 'เหลือ 32 ที่', 'ตามบัตรเชิญ', '#a8874f', 'brass', true, 'PARTNER GALA · 2026'],
-    ['lab', 'Founder Lab · รุ่น 4', '9 ม.ค. 2570', 'ทองหล่อ · ชั้น 6', 'เปิดรับ', 'เหลือ 18 ที่', '2,500 บาท', '#2f6b4f', 'forest', true, 'FOUNDER LAB · 04'],
-    ['roadshow', 'Regional Roadshow', '22 ก.พ. 2570', 'เชียงใหม่ · เซ็นทรัลเฟส', 'เร็ว ๆ นี้', 'ยังไม่เปิดรับ', 'ไม่มีค่าใช้จ่าย', '#2f4d8c', 'ink', false, 'REGIONAL ROADSHOW']
-  ];
-  sh.getRange(2, 1, rows.length, EVENTS_HEADERS.length).setValues(rows);
+// Appends any headers a pre-existing sheet is missing (e.g. spreadsheet_id,
+// added to Events by the per-event-file migration) as new trailing columns,
+// leaving existing columns and data untouched. No-op if already current.
+function migrateHeaders_(sh, headers) {
+  var existing = sh.getLastRow() > 0 ? sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0] : [];
+  var missing = headers.filter(function (h) { return existing.indexOf(h) < 0; });
+  if (missing.length) sh.getRange(1, existing.length + 1, 1, missing.length).setValues([missing]);
 }
 
-function seedFields_() {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.FIELDS);
-  if (sh.getLastRow() > 1) return; // already seeded
-  function base(eventId, extra) {
-    return [
-      [eventId, 'name', 'ชื่อ–นามสกุล', 'TEXT', true, 1],
-      [eventId, 'email', 'อีเมล', 'EMAIL', true, 2],
-      [eventId, 'phone', 'เบอร์โทรศัพท์', 'PHONE', true, 3]
-    ].concat(extra || []);
-  }
-  var rows = []
-    .concat(base('tt', [['tt', 'org', 'บริษัท / องค์กร', 'TEXT', false, 4]]))
-    .concat(base('gala', [['gala', 'diet', 'ข้อจำกัดด้านอาหาร', 'SELECT', false, 4]]))
-    .concat(base('lab', [['lab', 'role', 'ตำแหน่งงาน', 'TEXT', true, 4]]))
-    .concat(base('roadshow', []));
-  sh.getRange(2, 1, rows.length, FIELDS_HEADERS.length).setValues(rows);
+// Demo data — 4 events, each getting its OWN spreadsheet file (via
+// createEventFile_). Idempotent two ways, so setupSheets() is safe to re-run
+// AND safe to run against a pre-existing (pre-per-event-files) sheet:
+//   - event_id already has a non-empty spreadsheet_id -> fully set up, skip.
+//   - event_id row exists (old schema, e.g. from before this migration) but
+//     spreadsheet_id is blank -> create its file and fill in that one cell,
+//     rather than appending a duplicate row.
+//   - event_id doesn't exist at all -> append a brand-new row.
+function seedDemoEvents_() {
+  var demo = [
+    { id: 'tt', name: 'ThinkTech Summit 2026', date: '18–19 ธ.ค. 2569', place: 'ไบเทค บางนา · ฮอลล์ 2', status: 'เปิดรับ', seats: 'เหลือ 240 ที่', price: 'ไม่มีค่าใช้จ่าย', accent: '#d8482b', theme: 'editorial', open: true, short: 'THINKTECH SUMMIT · 2026', extra: [['org', 'บริษัท / องค์กร', 'TEXT', false, 4]] },
+    { id: 'gala', name: 'Annual Partner Gala', date: '24 ธ.ค. 2569', place: 'ดุสิตธานี · แกรนด์บอลรูม', status: 'เชิญเท่านั้น', seats: 'เหลือ 32 ที่', price: 'ตามบัตรเชิญ', accent: '#a8874f', theme: 'brass', open: true, short: 'PARTNER GALA · 2026', extra: [['diet', 'ข้อจำกัดด้านอาหาร', 'SELECT', false, 4]] },
+    { id: 'lab', name: 'Founder Lab · รุ่น 4', date: '9 ม.ค. 2570', place: 'ทองหล่อ · ชั้น 6', status: 'เปิดรับ', seats: 'เหลือ 18 ที่', price: '2,500 บาท', accent: '#2f6b4f', theme: 'forest', open: true, short: 'FOUNDER LAB · 04', extra: [['role', 'ตำแหน่งงาน', 'TEXT', true, 4]] },
+    { id: 'roadshow', name: 'Regional Roadshow', date: '22 ก.พ. 2570', place: 'เชียงใหม่ · เซ็นทรัลเฟส', status: 'เร็ว ๆ นี้', seats: 'ยังไม่เปิดรับ', price: 'ไม่มีค่าใช้จ่าย', accent: '#2f4d8c', theme: 'ink', open: false, short: 'REGIONAL ROADSHOW', extra: [] }
+  ];
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+  var t = readSheet_(SHEETS.EVENTS);
+  var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+  demo.forEach(function (e) {
+    var rowIdx = -1;
+    for (var i = 0; i < t.rows.length; i++) { if (t.rows[i][0] === e.id) { rowIdx = i; break; } }
+    if (rowIdx >= 0 && t.rows[rowIdx][col.spreadsheet_id - 1]) return; // already set up
+    var fileId = createEventFile_(e.id, e.name, e.extra);
+    if (rowIdx >= 0) {
+      sh.getRange(rowIdx + 2, col.spreadsheet_id).setValue(fileId);
+    } else {
+      sh.appendRow([e.id, e.name, e.date, e.place, e.status, e.seats, e.price, e.accent, e.theme, e.open, e.short, fileId]);
+    }
+  });
+}
+
+// Creates a brand-new spreadsheet file for one event — Fields, Registrations,
+// Checkins tabs with headers, default Fields seeded (name/email/phone plus
+// any extraFields). Returns the new file's ID. Used by both svcCreateEvent_
+// and seedDemoEvents_, so this creation logic exists in exactly one place.
+function createEventFile_(eventId, name, extraFields) {
+  var ss = SpreadsheetApp.create(name + ' — Event Check-in');
+  ensureSheet_(ss, SHEETS.FIELDS, FIELDS_HEADERS);
+  ensureSheet_(ss, SHEETS.REGISTRATIONS, REG_HEADERS);
+  ensureSheet_(ss, SHEETS.CHECKINS, CHECKIN_HEADERS);
+
+  var rows = [
+    [eventId, 'name', 'ชื่อ–นามสกุล', 'TEXT', true, 1],
+    [eventId, 'email', 'อีเมล', 'EMAIL', true, 2],
+    [eventId, 'phone', 'เบอร์โทรศัพท์', 'PHONE', true, 3]
+  ].concat((extraFields || []).map(function (f) { return [eventId].concat(f); }));
+  ss.getSheetByName(SHEETS.FIELDS).getRange(2, 1, rows.length, FIELDS_HEADERS.length).setValues(rows);
+
+  var defaultSheet = ss.getSheetByName('Sheet1');
+  if (defaultSheet && ss.getSheets().length > 1) ss.deleteSheet(defaultSheet);
+
+  return ss.getId();
+}
+
+// Registry lookup: event_id -> the ID of the spreadsheet file holding that
+// event's Fields/Registrations/Checkins. Cached — this mapping never changes
+// after an event is created — so the check-in hot path doesn't re-read the
+// Events registry on every scan.
+function eventFileId_(eventId) {
+  var cache = CacheService.getScriptCache();
+  var key = 'eventFile:' + eventId;
+  var cached = cache.get(key);
+  if (cached) return cached;
+  var ev = eventById_(eventId);
+  if (!ev || !ev.spreadsheet_id) throw new Error('event_not_found');
+  cache.put(key, ev.spreadsheet_id, 21600); // 6h
+  return ev.spreadsheet_id;
+}
+
+function openEventFile_(eventId) {
+  return SpreadsheetApp.openById(eventFileId_(eventId));
 }
 
 function seedBadgeConfig_() {
@@ -269,8 +340,10 @@ function rowToObj_(headers, row) {
   return o;
 }
 
-function readSheet_(name) {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+// ss defaults to the bound (Overview) file; pass an event file's
+// Spreadsheet object (openEventFile_) to read a per-event tab instead.
+function readSheet_(name, ss) {
+  var sh = (ss || SpreadsheetApp.getActiveSpreadsheet()).getSheetByName(name);
   var rows = sh.getDataRange().getValues();
   var headers = rows.shift();
   return { sheet: sh, headers: headers, rows: rows };
@@ -299,8 +372,8 @@ function listEvents() {
 // ---------------------------------------------------------------------------
 function getEventForm(eventId) {
   if (!eventId) throw new Error('missing_event_id');
-  var t = readSheet_(SHEETS.FIELDS);
-  return t.rows.filter(function (r) { return r[0] === eventId; }).map(function (r) {
+  var t = readSheet_(SHEETS.FIELDS, openEventFile_(eventId));
+  return t.rows.map(function (r) {
     var o = rowToObj_(t.headers, r);
     return { key: o.key, label: o.label, type: o.type, required: isTrue_(o.required), order: o.sort_order };
   }).sort(function (a, b) { return a.order - b.order; });
@@ -335,16 +408,27 @@ function register(p) {
   if (!lock.tryLock(15000)) throw new Error('busy');
   var regId, badgeCode, qrToken, nowIso;
   try {
-    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.REGISTRATIONS);
+    var sh = openEventFile_(eventId).getSheetByName(SHEETS.REGISTRATIONS);
     regId = 'r' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
     badgeCode = eventId.toUpperCase().slice(0, 4) + '-' + randomHex_(4) + '-' + (900 + Math.floor(Math.random() * 99));
     qrToken = signQr_(eventId, badgeCode);
     nowIso = new Date().toISOString();
-    sh.appendRow([
+    var row = [
       regId, eventId, badgeCode, qrToken, name, email, phone, org, type,
       JSON.stringify({ org: org }), 'online', 'registered', nowIso,
       consent ? nowIso : '', '', '', '', '', 0, nowIso, 'customer'
-    ]);
+    ];
+    sh.appendRow(row);
+    // Mirror into the Overview file's AllRegistrations tab, under the SAME
+    // lock — this shared tab is where concurrent appends across different
+    // events converge, and appendRow isn't safe against concurrent callers.
+    // Best-effort: a mirror failure must not fail a registration that
+    // already succeeded above (see getMyPass()'s known limitation on a miss).
+    try {
+      SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG).appendRow(row);
+    } catch (mirrorErr) {
+      Logger.log('AllRegistrations mirror failed for ' + regId + ': ' + mirrorErr);
+    }
   } finally {
     lock.releaseLock();
   }
@@ -409,7 +493,7 @@ function getMyPass(email) {
   var em = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(em)) throw new Error('invalid_email');
 
-  var t = readSheet_(SHEETS.REGISTRATIONS);
+  var t = readSheet_(SHEETS.ALL_REG);
   var matches = t.rows.map(function (r) { return rowToObj_(t.headers, r); })
     .filter(function (o) { return o.email && String(o.email).toLowerCase() === em && o.status !== 'deleted'; });
   if (!matches.length) throw new Error('not_found');
@@ -624,15 +708,19 @@ function ddmmyy_(iso) {
 }
 
 function regRowsFor_(eventId) {
-  var t = readSheet_(SHEETS.REGISTRATIONS);
+  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(eventId));
   return t.rows.map(function (r) { return rowToObj_(t.headers, r); })
-    .filter(function (o) { return o.reg_id && o.event_id === eventId && o.status !== 'deleted'; });
+    .filter(function (o) { return o.reg_id && o.status !== 'deleted'; });
 }
 
+// No cross-event "all checkins" mode anymore — each event's Checkins live in
+// that event's own file, and (unlike Registrations) they aren't mirrored
+// centrally, so an eventId is required.
 function checkinRowsFor_(eventId) {
-  var t = readSheet_(SHEETS.CHECKINS);
+  if (!eventId) throw new Error('missing_event_id');
+  var t = readSheet_(SHEETS.CHECKINS, openEventFile_(eventId));
   return t.rows.map(function (r) { return rowToObj_(t.headers, r); })
-    .filter(function (o) { return o.scan_id && (!eventId || o.event_id === eventId); })
+    .filter(function (o) { return o.scan_id; })
     .sort(function (a, b) { return new Date(b.scanned_at) - new Date(a.scanned_at); });
 }
 
@@ -664,11 +752,11 @@ function svcCheckin_(p) {
   try {
     // Read AFTER taking the lock — deciding from a value read before the lock
     // is exactly how two gates both think they were first.
-    var t = readSheet_(SHEETS.REGISTRATIONS);
+    var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(eventId));
     var idx = -1, rec = null;
     for (var i = 0; i < t.rows.length; i++) {
       var o = rowToObj_(t.headers, t.rows[i]);
-      if (o.event_id === eventId && String(o.badge_code).toUpperCase() === badgeCode && o.status !== 'deleted') {
+      if (String(o.badge_code).toUpperCase() === badgeCode && o.status !== 'deleted') {
         idx = i; rec = o; break;
       }
     }
@@ -710,7 +798,7 @@ function svcCheckin_(p) {
 }
 
 function logScan_(eventId, regId, badgeCode, name, staff, device, result, clientScanId) {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.CHECKINS);
+  var sh = openEventFile_(eventId).getSheetByName(SHEETS.CHECKINS);
   sh.appendRow([
     's' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), eventId, regId || '', badgeCode,
     name || '', new Date().toISOString(), staff.email, staff.gate, device, result, clientScanId || ''
@@ -745,7 +833,7 @@ function svcAttendees_(eventId, query) {
 function svcSetCheckedIn_(p) {
   var staff = requireStaff_(p.eventId, 'STAFF');
   var on = p.on === true || p.on === 'true';
-  var t = readSheet_(SHEETS.REGISTRATIONS);
+  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
   var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
   for (var i = 0; i < t.rows.length; i++) {
     var o = rowToObj_(t.headers, t.rows[i]);
@@ -773,7 +861,7 @@ function svcSetType_(p) {
   var type = String(p.type || '').trim();
   if (PASS_TYPES.indexOf(type) < 0) throw new Error('bad_type');
 
-  var t = readSheet_(SHEETS.REGISTRATIONS);
+  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
   var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
   for (var i = 0; i < t.rows.length; i++) {
     var o = rowToObj_(t.headers, t.rows[i]);
@@ -801,17 +889,25 @@ function svcAddWalkin_(p) {
   if (!lock.tryLock(15000)) throw new Error('busy');
   var regId, badgeCode;
   try {
-    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.REGISTRATIONS);
+    var sh = openEventFile_(p.eventId).getSheetByName(SHEETS.REGISTRATIONS);
     regId = 'r' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
     badgeCode = p.eventId.toUpperCase().slice(0, 4) + '-' + randomHex_(4) + '-' + (900 + Math.floor(Math.random() * 99));
     var nowIso = new Date().toISOString();
     // Walk-ins are checked in the moment they're created — they're standing
     // at the door.
-    sh.appendRow([
+    var row = [
       regId, p.eventId, badgeCode, signQr_(p.eventId, badgeCode), name, email, phone,
       String(p.org || ''), (PASS_TYPES.indexOf(String(p.type)) >= 0 ? String(p.type) : 'ทั่วไป'), JSON.stringify({}), 'walkin', 'checked_in',
       nowIso, nowIso, nowIso, staff.email, staff.gate, 'MANUAL', 1, nowIso, staff.email
-    ]);
+    ];
+    sh.appendRow(row);
+    // Walk-ins are a form of registration too — mirror them the same as
+    // register(), same lock, same best-effort try/catch.
+    try {
+      SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG).appendRow(row);
+    } catch (mirrorErr) {
+      Logger.log('AllRegistrations mirror failed for ' + regId + ': ' + mirrorErr);
+    }
   } finally {
     lock.releaseLock();
   }
@@ -824,7 +920,7 @@ function svcAddWalkin_(p) {
 // read filters it out.
 function svcDeleteAttendee_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
-  var t = readSheet_(SHEETS.REGISTRATIONS);
+  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
   var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
   for (var i = 0; i < t.rows.length; i++) {
     var o = rowToObj_(t.headers, t.rows[i]);
@@ -879,17 +975,13 @@ function svcCsv_(eventId) {
 function svcSaveFields_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
   var fields = p.fields || [];
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.FIELDS);
-  var all = sh.getDataRange().getValues();
-  var headers = all.shift();
-  var kept = all.filter(function (r) { return r[0] && r[0] !== p.eventId; });
+  var sh = openEventFile_(p.eventId).getSheetByName(SHEETS.FIELDS);
   var rows = fields.map(function (f, i) {
     return [p.eventId, f.key || ('f' + i), f.label, f.type || 'TEXT', f.required === true, i + 1];
   });
   sh.clear();
-  sh.appendRow(headers);
-  var out = kept.concat(rows);
-  if (out.length) sh.getRange(2, 1, out.length, FIELDS_HEADERS.length).setValues(out);
+  sh.appendRow(FIELDS_HEADERS);
+  if (rows.length) sh.getRange(2, 1, rows.length, FIELDS_HEADERS.length).setValues(rows);
   audit_(staff, 'saveFields', p.eventId, '', fields.length + ' fields');
   return { ok: true };
 }
@@ -923,13 +1015,20 @@ function svcCreateEvent_(p) {
   };
   var theme = themes[p.theme] ? p.theme : 'editorial';
 
-  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
-    id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
-    'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true, name.toUpperCase()
-  ]);
-  var fsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.FIELDS);
-  [['name', 'ชื่อ–นามสกุล', 'TEXT', true, 1], ['email', 'อีเมล', 'EMAIL', true, 2], ['phone', 'เบอร์โทรศัพท์', 'PHONE', true, 3]]
-    .forEach(function (f) { fsh.appendRow([id].concat(f)); });
+  var fileId = createEventFile_(id, name);
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
+      id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
+      'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true, name.toUpperCase(), fileId
+    ]);
+  } catch (err) {
+    // The Drive file above already exists but the registry never learned its
+    // ID — best-effort clean it up so a retry doesn't leave an orphan behind.
+    try { DriveApp.getFileById(fileId).setTrashed(true); } catch (cleanupErr) {
+      Logger.log('svcCreateEvent_ orphan cleanup failed for ' + fileId + ': ' + cleanupErr);
+    }
+    throw err;
+  }
   SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.BADGE).appendRow([id, 'A6', true, true, true, true, true]);
   audit_(staff, 'createEvent', id, '', name);
   return { id: id, name: name };

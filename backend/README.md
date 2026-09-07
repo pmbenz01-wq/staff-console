@@ -1,5 +1,61 @@
 # Backend — Google Sheet + Apps Script
 
+## Data topology — one file per event
+
+Customer data is **not** one shared spreadsheet anymore. Three kinds of file:
+
+- **Overview** — whatever spreadsheet `Code.gs` is bound to
+  (`SpreadsheetApp.getActiveSpreadsheet()`). Holds:
+  - `Events` — event display metadata, same as before, plus a
+    `spreadsheet_id` column: the ID of that event's own file (see below).
+    This makes it the central registry.
+  - `BadgeConfig`, `AuditLog` — unchanged, still centralized here.
+  - `AllRegistrations` — a live mirror of every `Registrations` row across
+    all events, written by `register()` (and `svcAddWalkin_`) only. It
+    exists so `getMyPass()` (cross-event "find my pass by email") stays fast
+    without opening every event's file on each search.
+- **One file per event** — created by `createEventFile_(eventId, name, extraFields)`,
+  the same `SpreadsheetApp.create()` pattern `setupTeamAccessSheet()` already
+  used. Holds exactly `Fields`, `Registrations` (source of truth), and
+  `Checkins` for that one event only. `eventFileId_()` (cached ~6h via
+  `CacheService`) and `openEventFile_()` resolve which file to open for a
+  given `eventId`.
+- **Team Access** — unchanged, still its own separate file (see below).
+
+Run `setupSheets()` once to seed the 4 demo events, each into its own new
+file. It's safe to re-run: an event already holding a non-empty
+`spreadsheet_id` in the registry is left alone rather than getting a
+duplicate Drive file. `svcCreateEvent_` (the console's "new event" action)
+uses the same `createEventFile_()` helper, and rolls back (trashes) the
+Drive file it just created if writing the registry row afterward fails.
+
+**Known limitations, not bugs:**
+- **No Drive-ACL automation.** Creating a per-event file does not share it
+  with anyone but the script owner — handing an organizer their own file is
+  a manual **File → Share** step. This also means Team-Access roles and
+  actual Drive file permissions are two unsynced systems: revoking someone's
+  STAFF role does **not** revoke direct Sheets access if they were ever
+  shared a file directly.
+- **`AllRegistrations` is lookup-only, not reporting-ready.** It's written
+  once, on registration. Check-in status, soft-deletes, and pass-type
+  changes made afterward are **not** propagated to it. Fine for `getMyPass`
+  ("does this email have a badge"); a future cross-event CRM/reporting
+  screen would need to either read it more carefully or read from each
+  event's own file instead.
+- **No fallback on a mirror-write miss.** The mirror write is
+  lock-protected and best-effort (try/catch), same pattern as the
+  confirmation email — but if it silently fails anyway, `getMyPass` reports
+  `not_found` with no recovery path.
+- **Direct file edits during a live event are a real risk.** `svcCheckin_`
+  and similar snapshot rows via `getDataRange().getValues()`, then write
+  back by absolute row number. Someone with direct file access
+  inserting/sorting/deleting a row mid-event can make a later write land on
+  the wrong row, silently. Recommend sharing a per-event file as **Viewer**
+  during the event and **Editor** only before/after, rather than relying on
+  a code fix.
+
+## Files
+
 Four files go into one Apps Script project:
 
 | File | What it is |
@@ -51,10 +107,12 @@ trusting a session that cookies can't carry cross-origin anyway.
    name them exactly **`Staff`** and **`Badge`** (Apps Script appends `.html`
    itself), pasting in `Staff.html` and `Badge.html`.
 3. In the Apps Script editor, select `setupSheets` from the function dropdown and
-   click **Run** (once). This creates the `Events`, `Fields`, and `Registrations`
-   sheets with headers, seeds 4 sample events (matching the design's prototype
-   data), and generates a random `QR_SECRET` in Script Properties. Safe to re-run —
-   it skips sheets/rows that already exist.
+   click **Run** (once). This sets up the Overview file's `Events`/`BadgeConfig`/
+   `AuditLog`/`AllRegistrations` tabs, creates 4 **new spreadsheet files** (one per
+   demo event, via `createEventFile_`) and registers their IDs into `Events.spreadsheet_id`,
+   and generates a random `QR_SECRET` in Script Properties. Safe to re-run — an
+   event that already has a file registered is left alone, so this never spawns
+   duplicate Drive files.
 4. **Deploy → New deployment → Web app**:
    - Execute as: **Me**
    - Who has access: **Anyone**
