@@ -598,6 +598,25 @@
 
   // ---------------------------------------------------------------------
   function renderFields() {
+    // Consent is taken by the act of confirming, with the wording shown next
+    // to the button — so this switch decides whether that wording appears at
+    // all, and whether register() demands consent for this event.
+    var e = ev() || {};
+    var pdpaOn = !!e.pdpa;
+    var pdpaRow = '<div class="card" style="padding:16px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:220px"><div style="font:500 13px Prompt,sans-serif">ข้อความยินยอม PDPA</div>' +
+      '<div class="muted" style="font:300 11.5px/1.5 Prompt,sans-serif;margin-top:3px">' +
+      (pdpaOn
+        ? "กำลังแสดงใต้ปุ่มยืนยัน · การกดยืนยันถือเป็นการให้ความยินยอม และระบบจะบันทึกเวลาไว้"
+        : "ปิดอยู่ · หน้าลงทะเบียนไม่แสดงข้อความ และไม่บันทึกเวลายินยอม") +
+      "</div></div>" +
+      (can("ADMIN")
+        ? '<button class="btn-ghost" data-act="toggle-pdpa" data-on="' + (pdpaOn ? "0" : "1") + '"' +
+          (pdpaOn ? ' style="border-color:var(--accent);color:var(--accent)"' : "") + ">" +
+          (pdpaOn ? "เปิดอยู่" : "ปิดอยู่") + "</button>"
+        : '<span class="muted">ต้องเป็น ADMIN</span>') +
+      "</div>";
+
     var rows = state.fields.map(function (f, i) {
       return '<div class="trow"><div class="mono" style="width:22px;color:var(--muted)">' + (i + 1) + "</div>" +
         '<div class="c-grow1"><div class="cell-name">' + esc(f.label) + "</div>" +
@@ -614,13 +633,14 @@
     return '<div class="split"><div class="split-main">' +
       '<div><div class="page-title">ฟิลด์ในฟอร์มลงทะเบียน</div>' +
       '<div class="page-sub">ตั้งค่าแยกตามแต่ละงาน · เพิ่ม ลบ หรือกำหนดว่าฟิลด์ใดจำเป็น แล้วกดบันทึก<br>' +
-      '<b style="color:var(--accent)">หมายเหตุ:</b> ตอนนี้บันทึกลงชีตแล้ว แต่หน้าลูกค้ายังใช้ฟอร์ม 5 ขั้นแบบตายตัวอยู่ ' +
-      'จะเชื่อมให้ฟอร์มลูกค้าอ่านฟิลด์ชุดนี้จริงในขั้นถัดไป</div></div>' +
+      'หน้าลูกค้าอ่านฟิลด์ชุดนี้จริง — ฟิลด์ที่ตั้งเป็น <b>จำเป็น</b> จะอยู่หน้าแรก ' +
+      'ที่เหลืออยู่หน้าถัดไปซึ่งลูกค้าข้ามได้ ถ้าไม่มีฟิลด์ที่ไม่บังคับเลย จะเหลือหน้าเดียวแล้วขึ้น QR ทันที</div></div>' +
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีฟิลด์</div>') +
       '<div style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
       '<input id="new-field" value="' + esc(state.newField) + '" placeholder="ชื่อฟิลด์ใหม่ เช่น ตำแหน่งงาน" ' +
       'style="flex:1;min-width:170px;background:var(--sunken);border:1px solid var(--line);outline:none;padding:11px 13px;font:300 12.5px Prompt,sans-serif" />' +
       '<button class="btn-ghost" data-act="field-add" style="border-color:var(--accent);color:var(--accent);padding:11px 16px">+ เพิ่มฟิลด์</button></div></div>' +
+      pdpaRow +
       (can("ADMIN") ? '<div><button class="btn-gold" data-act="fields-save">บันทึกฟิลด์ของงานนี้</button></div>' : '<div class="muted">ต้องเป็น ADMIN จึงจะบันทึกได้</div>') +
       "</div>" +
       '<div class="split-side"><div class="side-kicker">พรีวิวหน้าลูกค้า</div>' +
@@ -949,6 +969,16 @@
         render(); loadScreen();
         break;
       case "refresh": loadScreen(); flash("อัปเดตแล้ว"); break;
+      case "toggle-pdpa": {
+        var wantPdpa = el.dataset.on === "1";
+        api("setEventProp", { eventId: state.eventId, pdpa: wantPdpa }).then(function () {
+          var found = state.events.filter(function (x) { return x.id === state.eventId; })[0];
+          if (found) found.pdpa = wantPdpa;
+          flash(wantPdpa ? "เปิดข้อความยินยอม PDPA แล้ว" : "ปิดข้อความยินยอม PDPA แล้ว");
+          render();
+        }).catch(fail);
+        break;
+      }
       case "toggle-hidden": {
         var willHide = el.dataset.hidden === "1";
         api("setEventProp", { eventId: el.dataset.id, hidden: willHide }).then(function () {
