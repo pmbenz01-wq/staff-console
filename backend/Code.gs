@@ -49,7 +49,7 @@ var SHEETS = {
 // un-hide it) via allEventsRows_() in svcBootstrap_.
 // image_url: a public https image for the customer picker card / form banner
 // (falls back to the striped placeholder client-side when blank).
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url'];
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -371,7 +371,7 @@ function allEventsRows_() {
       id: o.event_id, name: o.name, date: o.date_display, place: o.place,
       status: o.status_label, seats: o.seats_label, price: o.price_label,
       accent: o.accent, theme: o.theme, open: isTrue_(o.open), short: o.short_label,
-      hidden: isTrue_(o.hidden), image: o.image_url || ''
+      hidden: isTrue_(o.hidden), image: o.image_url || '', pdpa: isTrue_(o.pdpa)
     };
   });
 }
@@ -407,16 +407,29 @@ function register(p) {
   // organiser makes, not the attendee — staff set it from the console.
   var type = 'ทั่วไป';
   var consent = p.consent === true || p.consent === 'true';
+  // Answers to whatever extra questions this event defines in its Fields
+  // sheet. org keeps its own column as well as its place here, so anything
+  // already reading answers_json.org keeps working.
+  var answers = { org: org };
+  if (p.answers && typeof p.answers === 'object' && !Array.isArray(p.answers)) {
+    Object.keys(p.answers).forEach(function (k) {
+      if (k === 'name' || k === 'email' || k === 'phone') return;
+      answers[k] = String(p.answers[k] == null ? '' : p.answers[k]).trim();
+    });
+  }
 
   if (!eventId) throw new Error('missing_event');
   if (!name) throw new Error('invalid_name');
   if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('invalid_email');
   if (phone.replace(/\D/g, '').length < 9) throw new Error('invalid_phone');
-  if (!consent) throw new Error('consent_required');
-
   var ev = eventById_(eventId);
   if (!ev) throw new Error('event_not_found');
   if (!isTrue_(ev.open)) throw new Error('event_closed');
+  // Consent is demanded only where the event actually shows the PDPA notice.
+  // With the switch off nothing is asked, so nothing is recorded — an empty
+  // consent_at beats a stamp for something the attendee never saw.
+  var wantsConsent = isTrue_(ev.pdpa);
+  if (wantsConsent && !consent) throw new Error('consent_required');
 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) throw new Error('busy');
@@ -429,8 +442,8 @@ function register(p) {
     nowIso = new Date().toISOString();
     var row = [
       regId, eventId, badgeCode, qrToken, name, email, phone, org, type,
-      JSON.stringify({ org: org }), 'online', 'registered', nowIso,
-      consent ? nowIso : '', '', '', '', '', 0, nowIso, 'customer'
+      JSON.stringify(answers), 'online', 'registered', nowIso,
+      (wantsConsent && consent) ? nowIso : '', '', '', '', '', 0, nowIso, 'customer'
     ];
     sh.appendRow(row);
     // Mirror into the Overview file's AllRegistrations tab, under the SAME
@@ -1077,6 +1090,15 @@ function svcSetEventProp_(p) {
     }
     if (p.open !== undefined) sh.getRange(i + 2, col.open).setValue(p.open === true || p.open === 'true');
     if (p.hidden !== undefined) sh.getRange(i + 2, col.hidden).setValue(p.hidden === true || p.hidden === 'true');
+    if (p.pdpa !== undefined) {
+      // The column post-dates most sheets. Add it on first write rather than
+      // making a one-off setupSheets() run a prerequisite for the switch.
+      if (!col.pdpa) {
+        sh.getRange(1, t.headers.length + 1).setValue('pdpa');
+        col.pdpa = t.headers.length + 1;
+      }
+      sh.getRange(i + 2, col.pdpa).setValue(p.pdpa === true || p.pdpa === 'true');
+    }
     if (p.image !== undefined) sh.getRange(i + 2, col.image_url).setValue(String(p.image || ''));
     if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
     if (p.date) sh.getRange(i + 2, col.date_display).setValue(p.date);
