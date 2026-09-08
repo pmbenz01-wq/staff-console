@@ -109,6 +109,7 @@
     fields: [],
     team: [],
     scanResult: null,
+    sending: false,
     recentScans: [],
     showWalkin: false,
     showNewEvent: false,
@@ -122,6 +123,13 @@
   };
 
   var app, toastTimer = null, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
+  // How long a badge must be absent before the same code counts as a new
+  // person stepping up. jsQR drops the odd frame even while a badge is held
+  // steady, so this has to be comfortably longer than a dropped frame or two.
+  var GONE_MS = 1500;
+  // Apps Script can legitimately sit on a scan for a while: svcCheckin_ waits
+  // up to 15s for the script lock before giving up.
+  var SCAN_TIMEOUT_MS = 25000;
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -456,7 +464,9 @@
   function renderScan() {
     var r = state.scanResult;
     var card;
-    if (!r) {
+    if (state.sending) {
+      card = '<div class="card empty">กำลังบันทึกการเช็คอิน…</div>';
+    } else if (!r) {
       card = '<div class="card empty">ยังไม่มีการสแกนในเครื่องนี้ · เล็ง QR ของผู้เข้าร่วมเข้ากล้อง หรือพิมพ์รหัสบัตรด้านล่าง</div>';
     } else {
       var cls = r.result === "ok" ? "is-ok" : r.result === "duplicate" ? "is-dup" : "is-bad";
@@ -843,14 +853,19 @@
       try {
         var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
         var code = window.jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
-        // Same badge held in front of the lens produces a hit every frame —
-        // ignore repeats for a few seconds so one person is checked in once.
+        // Same badge held in front of the lens produces a hit every frame.
+        // Submit once per presentation: the code has to actually leave the
+        // frame before it counts again. A time-based window instead meant a
+        // badge left in view re-submitted on every tick of it, writing a
+        // duplicate scan row each time.
+        var now = Date.now();
         if (code && code.data) {
-          var now = Date.now();
-          if (code.data !== lastCode || now - lastCodeAt > 4000) {
-            lastCode = code.data; lastCodeAt = now;
-            submitScan({ qr: code.data });
-          }
+          var fresh = code.data !== lastCode || now - lastCodeAt > GONE_MS;
+          lastCode = code.data;
+          lastCodeAt = now;                       // still in frame
+          if (fresh) submitScan({ qr: code.data });
+        } else if (lastCode && now - lastCodeAt > GONE_MS) {
+          lastCode = "";                          // frame cleared, ready for the next person
         }
       } catch (err) { /* frame not ready */ }
     }
@@ -860,11 +875,33 @@
   function submitScan(payload) {
     if (state.busy) return;
     state.busy = true;
+    state.sending = true;
+    render();
     payload.eventId = state.eventId;
     payload.device = deviceId();
     payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    api("checkin", payload).then(function (r) {
+
+    // A fetch to Apps Script can hang indefinitely when the venue's network
+    // drops mid-request. Without this the busy flag never clears and the
+    // scanner dies silently: camera still running, staff still scanning,
+    // nothing reaching the server and nothing on screen to say so.
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
       state.busy = false;
+      state.sending = false;
+      lastCode = "";                    // let them simply scan again
+      render();
+      flash("ส่งไม่สำเร็จ (เครือข่ายช้าหรือหลุด) — สแกนบัตรใบเดิมซ้ำได้เลย");
+      beep(220);
+    }, SCAN_TIMEOUT_MS);
+
+    api("checkin", payload).then(function (r) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      state.busy = false;
+      state.sending = false;
       state.scanResult = r;
       state.recentScans.unshift({
         time: new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }),
@@ -874,7 +911,15 @@
       if (r.result === "ok") beep(880); else beep(220);
       render();
       drawScanQr();
-    }).catch(function (e) { state.busy = false; fail(e); });
+    }).catch(function (e) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      state.busy = false;
+      state.sending = false;
+      lastCode = "";                    // a failed scan must be re-scannable
+      render();
+      fail(e);
+    });
   }
 
   function deviceId() {
