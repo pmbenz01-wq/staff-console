@@ -1135,12 +1135,12 @@
   }
 
   function printUrl(regId) {
-    // Badge.html is still served by Apps Script (session-based), not this
-    // Vercel-hosted app. That is fine: whoever is signed in here via Google
-    // Sign-In already has an active Google session in this same browser, so
-    // Apps Script recognizes it without a second login.
-    var base = (window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) || "";
-    return base + "?page=badge&eventId=" + encodeURIComponent(state.eventId) + "&regId=" + encodeURIComponent(regId);
+    // Served from this app, not Apps Script. The Apps-Script-hosted Badge.html
+    // identified the caller with Session.getActiveUser(), which is blank for
+    // anyone but the script owner under executeAs: USER_DEPLOYING — so every
+    // staff member got no_identity instead of a badge. This page is on our own
+    // origin, so it reuses the ID token already in localStorage.
+    return "./staff/badge.html?eventId=" + encodeURIComponent(state.eventId) + "&regId=" + encodeURIComponent(regId);
   }
 
   function saveWalkin() {
