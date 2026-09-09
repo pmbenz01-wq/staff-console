@@ -14,6 +14,7 @@
   var SCAN_TIMEOUT_MS = 25000;
   var PASS_CLEAR_MS = 1900;                // only a pass clears itself
   var PROBE_MS = 5000;                     // how often to re-test a dead network
+  var SEARCH_MIN = 2;                      // shorter than this is not a search
 
   var state = {
     phase: "boot",                         // boot | signin | ready | error
@@ -267,6 +268,9 @@
   function loadTab() {
     if (!state.eventId) return;
     if (state.tab === "list") {
+      if (state.attendeesQuery.trim().length < SEARCH_MIN) {
+        state.attendees = []; state.attendeesBusy = false; render(); return;
+      }
       state.attendeesBusy = true; render();
       api("attendees", { eventId: state.eventId, query: state.attendeesQuery })
         .then(function (d) { state.attendees = d || []; state.attendeesBusy = false; render(); })
@@ -618,9 +622,11 @@
 
   function viewList() {
     var rows;
+    var q = state.attendeesQuery.trim();
     if (state.attendeesBusy) rows = '<div class="empty">กำลังโหลด…</div>';
-    else if (!state.attendees.length) rows = '<div class="empty">' +
-      (state.attendeesQuery ? "ไม่พบชื่อที่ค้นหา" : "ยังไม่มีผู้ลงทะเบียน") + "</div>";
+    else if (q.length < SEARCH_MIN) rows = '<div class="empty">พิมพ์ชื่อ หรือรหัสบัตร เพื่อค้นหา<br>' +
+      "รายชื่อทั้งงานจะไม่แสดงขึ้นมาเอง</div>";
+    else if (!state.attendees.length) rows = '<div class="empty">ไม่พบ “' + esc(q) + "”</div>";
     else rows = state.attendees.map(function (a) {
       var inn = a.status === "checked_in";
       return '<div class="row"><div class="grow"><div class="nm">' + esc(a.name) + "</div>" +
