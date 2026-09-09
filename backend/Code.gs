@@ -273,21 +273,50 @@ function findStaffByEmail_(email) {
 // so `google.script.run` needs no CORS and Session.getActiveUser() is populated.
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) return handle_(e);
-  if (e && e.parameter && e.parameter.page === 'badge') return serveBadgePrint_(e);
-  return serveStaffConsole_();
+  if (e && e.parameter && e.parameter.page === 'badge') return serveMoved_('badge', e);
+  return serveMoved_('console', e);
 }
 function doPost(e) { return handle_(e); }
 
-function serveStaffConsole_() {
-  return HtmlService.createHtmlOutputFromFile('Staff')
-    .setTitle('Staff Console — Event Check-in')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
+// Both of these used to be served from here and are not any more.
+//
+// The console shell (Staff.html) loaded its JS cross-origin from Vercel, so
+// anything the page computed relative to itself resolved against
+// googleusercontent.com — that is how the print button broke. The badge page
+// identified its caller with Session.getActiveUser(), which under
+// executeAs: USER_DEPLOYING is blank for everyone except the script owner, so
+// it answered no_identity to every staff member who opened it.
+//
+// Both now live on the Vercel app, where the signed-in ID token is available.
+// A second door into the same app that only half works is worse than no door,
+// so what is left here is a sign pointing at the one that does.
+var CONSOLE_URL = 'https://staff-console-teal.vercel.app';
 
-function serveBadgePrint_(e) {
-  return HtmlService.createHtmlOutputFromFile('Badge')
-    .setTitle('Badge — Print')
+function serveMoved_(what, e) {
+  var target = CONSOLE_URL;
+  var lead = 'Staff Console ย้ายที่อยู่แล้ว';
+  if (what === 'badge') {
+    var evId = (e && e.parameter && e.parameter.eventId) || '';
+    var regId = (e && e.parameter && e.parameter.regId) || '';
+    target = CONSOLE_URL + '/staff/badge.html?eventId=' + encodeURIComponent(evId) +
+             '&regId=' + encodeURIComponent(regId);
+    lead = 'หน้าพิมพ์บัตรย้ายที่อยู่แล้ว';
+  }
+  var html =
+    '<!doctype html><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>' + lead + '</title>' +
+    '<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f4ee;' +
+    'color:#211d17;font-family:Prompt,system-ui,sans-serif;text-align:center;padding:32px}' +
+    'h1{font-size:22px;font-weight:600;margin:0 0 10px}' +
+    'p{font-size:14px;color:#5c564a;margin:0 0 24px;line-height:1.7}' +
+    'a{display:inline-block;background:#9c7a2e;color:#fff;text-decoration:none;' +
+    'padding:14px 26px;border-radius:99px;font-weight:600;font-size:14px}</style>' +
+    '<div><h1>' + lead + '</h1>' +
+    '<p>ที่อยู่เดิมนี้ไม่ได้ใช้งานแล้ว<br>กดปุ่มด้านล่างเพื่อไปยังที่อยู่ใหม่ แล้วบันทึกไว้แทน</p>' +
+    '<a href="' + target + '">ไปยังที่อยู่ใหม่</a></div>';
+  return HtmlService.createHtmlOutput(html)
+    .setTitle(lead)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
