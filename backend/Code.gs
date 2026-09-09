@@ -548,10 +548,18 @@ function eventById_(id) {
   return row ? rowToObj_(t.headers, row) : null;
 }
 
+// Where the customer site lives. This used to come from a CUSTOMER_SITE_URL
+// script property, which meant the address printed into every attendee's
+// email was held somewhere nobody could see without opening the Apps Script
+// settings — and when the site was renamed, no one could tell whether the
+// property still matched. There is one customer site; its address belongs in
+// version control where a rename is a visible one-line change.
+var CUSTOMER_SITE_URL = 'https://1neve.vercel.app';
+
 // Best-effort — a mail quota hiccup shouldn't fail the registration itself.
 function sendPassEmail_(email, name, ev, badgeCode) {
   try {
-    var siteUrl = PropertiesService.getScriptProperties().getProperty('CUSTOMER_SITE_URL') || '';
+    var siteUrl = CUSTOMER_SITE_URL;
     var link = siteUrl ? (siteUrl + (siteUrl.indexOf('?') >= 0 ? '&' : '?') + 'lookup=' + encodeURIComponent(email)) : '';
     var subject = '[' + ev.name + '] บัตรเข้างานของคุณ / Your entry pass';
     var body = 'สวัสดีคุณ ' + name + ',\n\n' +
