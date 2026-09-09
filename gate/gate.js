@@ -21,7 +21,7 @@
     me: null, events: [], eventId: null,
     tab: "scan",
     online: true,
-    camera: "off",                         // off | on | denied | unsupported
+    camera: "off",                         // off | on | denied | unsupported | noreader
     attendees: [], attendeesQuery: "", attendeesBusy: false,
     manual: "",                            // survives a re-render mid-typing
     history: [], historyBusy: false,
@@ -29,6 +29,7 @@
   };
 
   var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
+  var decoderLoading = null;
   var raf = null, toastTimer = null, verdictTimer = null, probeTimer = null;
 
   // ---------------------------------------------------------------------
@@ -294,6 +295,22 @@
   // ---------------------------------------------------------------------
   // camera — off until asked (ADR 0018)
   // ---------------------------------------------------------------------
+  // 260 KB of QR decoder that the sign-in screen has no use for. It arrives
+  // when the operator asks for the camera, which by ADR 0018 is the first
+  // moment anything scanning-related is wanted at all.
+  function ensureDecoder() {
+    if (window.jsQR) return Promise.resolve();
+    if (decoderLoading) return decoderLoading;
+    decoderLoading = new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = "./vendor/jsQR.js";
+      s.onload = function () { resolve(); };
+      s.onerror = function () { decoderLoading = null; reject(new Error("decoder_failed")); };
+      document.head.appendChild(s);
+    });
+    return decoderLoading;
+  }
+
   function startCamera() {
     if (scanning) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -302,19 +319,25 @@
     scanning = true;
     state.camera = "on";
     render();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then(function (stream) {
-        var video = camNode && camNode.querySelector("video");
-        if (!video) return;
-        video.srcObject = stream;
-        video.play();
-        requestAnimationFrame(tick);
-      })
-      .catch(function () {
-        scanning = false;
-        state.camera = "denied";
-        render();
-      });
+    // The decoder has to be here before the camera is, or the operator gets a
+    // live picture that silently never reads anything.
+    ensureDecoder().then(function () {
+      return navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    }).then(function (stream) {
+      if (!scanning) {                       // they left the tab while it loaded
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
+      var video = camNode && camNode.querySelector("video");
+      if (!video) return;
+      video.srcObject = stream;
+      video.play();
+      requestAnimationFrame(tick);
+    }).catch(function (e) {
+      scanning = false;
+      state.camera = String((e && e.message) || e) === "decoder_failed" ? "noreader" : "denied";
+      render();
+    });
   }
 
   function stopCamera() {
@@ -601,9 +624,13 @@
         ? "ไม่ได้รับสิทธิ์ใช้กล้อง — เปิดสิทธิ์ในตั้งค่าเบราว์เซอร์ หรือพิมพ์รหัสบัตรด้านล่างแทน"
         : state.camera === "unsupported"
         ? "อุปกรณ์นี้เปิดกล้องไม่ได้ — ใช้ช่องพิมพ์รหัสบัตรด้านล่างแทน"
+        : state.camera === "noreader"
+        ? "โหลดตัวอ่าน QR ไม่สำเร็จ — ตรวจอินเทอร์เน็ตแล้วกดลองใหม่ หรือพิมพ์รหัสบัตรด้านล่างแทน"
         : "กล้องยังไม่เปิด กดปุ่มด้านล่างเมื่อพร้อมสแกน";
       off = '<div class="cam-off"><div><p>' + esc(msg) + "</p>" +
-        (state.camera === "off" ? '<button class="cam-start" data-act="camon">เริ่มสแกน</button>' : "") +
+        (state.camera === "off" || state.camera === "noreader"
+          ? '<button class="cam-start" data-act="camon">' +
+            (state.camera === "noreader" ? "ลองใหม่" : "เริ่มสแกน") + "</button>" : "") +
         "</div></div>";
     }
     return '<div class="pane' + (state.tab === "scan" ? " on" : "") + '">' +
