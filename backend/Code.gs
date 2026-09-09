@@ -864,7 +864,13 @@ function svcCheckin_(p) {
 
     if (already) {
       t.sheet.getRange(rowNum, col.scan_count).setValue(Number(rec.scan_count || 1) + 1);
-      logScan_(eventId, rec.reg_id, badgeCode, rec.full_name, staff, device, 'duplicate', p.clientScanId);
+      // No Checkins row for a repeat (ADR 0014). Every row is an appendRow
+      // under the script-wide lock, so a badge waved twice costs the queue as
+      // much as a real check-in does, and at a door that queue is people
+      // standing still. What the log gets asked afterwards — is this person in,
+      // and who let them in — is answered by the registration row, which still
+      // carries the first check-in's time, gate and operator next to the count.
+      // Rejections keep writing a row: nothing else records them.
       return {
         result: 'duplicate', name: rec.full_name, org: rec.org, type: rec.type,
         badgeCode: badgeCode, regId: rec.reg_id,
