@@ -408,20 +408,45 @@ function register(p) {
   var type = 'ทั่วไป';
   var consent = p.consent === true || p.consent === 'true';
   // Answers to whatever extra questions this event defines in its Fields
-  // sheet. org keeps its own column as well as its place here, so anything
-  // already reading answers_json.org keeps working.
-  var answers = { org: org };
+  // sheet. The four keys that have columns of their own are ignored here so a
+  // caller cannot use answers to overwrite them — org in particular is read
+  // back out of answers_json by older code.
+  var answers = {};
   if (p.answers && typeof p.answers === 'object' && !Array.isArray(p.answers)) {
     Object.keys(p.answers).forEach(function (k) {
-      if (k === 'name' || k === 'email' || k === 'phone') return;
-      answers[k] = String(p.answers[k] == null ? '' : p.answers[k]).trim();
+      if (k === 'name' || k === 'email' || k === 'phone' || k === 'org') return;
+      answers[k] = String(p.answers[k] == null ? '' : p.answers[k]).trim().slice(0, 500);
     });
   }
+  answers.org = org;
 
   if (!eventId) throw new Error('missing_event');
+
+  // Name and email are required whatever the Fields sheet says: the QR is
+  // delivered by email (sendPassEmail_) and a returning attendee finds their
+  // pass by it (getMyPass), and the badge has to print a name. Everything
+  // else — phone included — is required only if staff ticked it, so the form
+  // the customer sees and the rules the server enforces cannot disagree.
   if (!name) throw new Error('invalid_name');
   if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('invalid_email');
-  if (phone.replace(/\D/g, '').length < 9) throw new Error('invalid_phone');
+
+  var fieldDefs = [];
+  try { fieldDefs = getEventForm(eventId); } catch (formErr) { fieldDefs = []; }
+  var supplied = { name: name, email: email, phone: phone, org: org };
+  for (var fi = 0; fi < fieldDefs.length; fi++) {
+    var fd = fieldDefs[fi];
+    if (fd.key === 'name' || fd.key === 'email') continue;   // already settled above
+    var val = supplied.hasOwnProperty(fd.key)
+      ? supplied[fd.key]
+      : String(answers[fd.key] == null ? '' : answers[fd.key]);
+    if (!val) {
+      if (fd.required) throw new Error('missing_' + fd.key);
+      continue;                                              // blank and optional is fine
+    }
+    if (fd.type === 'PHONE' && val.replace(/\D/g, '').length < 9) throw new Error('invalid_phone');
+    if (fd.type === 'EMAIL' && !/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(val)) throw new Error('invalid_email');
+  }
+
   var ev = eventById_(eventId);
   if (!ev) throw new Error('event_not_found');
   if (!isTrue_(ev.open)) throw new Error('event_closed');
@@ -1019,7 +1044,12 @@ function svcSaveFields_(p) {
   var fields = p.fields || [];
   var sh = openEventFile_(p.eventId).getSheetByName(SHEETS.FIELDS);
   var rows = fields.map(function (f, i) {
-    return [p.eventId, f.key || ('f' + i), f.label, f.type || 'TEXT', f.required === true, i + 1];
+    var key = f.key || ('f' + i);
+    // register() requires these two no matter what, because the QR is emailed
+    // and the badge prints a name. Letting them be saved as optional would
+    // build a form whose own server rejects it.
+    var required = (key === 'name' || key === 'email') ? true : f.required === true;
+    return [p.eventId, key, f.label, f.type || 'TEXT', required, i + 1];
   });
   sh.clear();
   sh.appendRow(FIELDS_HEADERS);

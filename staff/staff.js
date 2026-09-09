@@ -861,9 +861,17 @@
         var now = Date.now();
         if (code && code.data) {
           var fresh = code.data !== lastCode || now - lastCodeAt > GONE_MS;
-          lastCode = code.data;
-          lastCodeAt = now;                       // still in frame
-          if (fresh) submitScan({ qr: code.data });
+          if (!fresh) {
+            lastCodeAt = now;                     // same badge, still in frame
+          } else if (submitScan({ qr: code.data })) {
+            // Only remember it once it really went out. Recording it up front
+            // meant a badge presented while an earlier scan was still in
+            // flight got swallowed: submitScan returned on the busy guard, but
+            // the code counted as seen, so it never went again until the
+            // person pulled their badge out of frame.
+            lastCode = code.data;
+            lastCodeAt = now;
+          }
         } else if (lastCode && now - lastCodeAt > GONE_MS) {
           lastCode = "";                          // frame cleared, ready for the next person
         }
@@ -872,8 +880,10 @@
     requestAnimationFrame(tick);
   }
 
+  // Returns true when the scan was actually sent, so the caller knows whether
+  // to count the badge as handled.
   function submitScan(payload) {
-    if (state.busy) return;
+    if (state.busy) return false;
     state.busy = true;
     state.sending = true;
     render();
@@ -891,9 +901,12 @@
       settled = true;
       state.busy = false;
       state.sending = false;
-      lastCode = "";                    // let them simply scan again
+      // lastCode is deliberately left alone. Clearing it made the still-held
+      // badge look new on the next frame and the scanner re-sent it with
+      // nobody asking — and if the original call did land, that came back as
+      // "already checked in" for someone who had just walked up.
       render();
-      flash("ส่งไม่สำเร็จ (เครือข่ายช้าหรือหลุด) — สแกนบัตรใบเดิมซ้ำได้เลย");
+      flash("ส่งไม่สำเร็จ (เครือข่ายช้าหรือหลุด) — ยกบัตรออกแล้วสแกนใหม่อีกครั้ง");
       beep(220);
     }, SCAN_TIMEOUT_MS);
 
@@ -916,10 +929,12 @@
       settled = true; clearTimeout(timer);
       state.busy = false;
       state.sending = false;
-      lastCode = "";                    // a failed scan must be re-scannable
+      // lastCode is left set for the same reason as the timeout above: a
+      // badge still held in frame must not re-send itself.
       render();
       fail(e);
     });
+    return true;
   }
 
   function deviceId() {
@@ -1134,13 +1149,29 @@
     render();
   }
 
+  // Where this very file was served from — which is also where badge.html
+  // sits. The Apps Script shell (Staff.html) loads staff.js cross-origin from
+  // Vercel, so a relative link would resolve against googleusercontent.com
+  // and 404; taking the base from our own <script src> works from either host.
+  var SELF_BASE = (function () {
+    var el = document.currentScript;
+    if (!el) {
+      var all = document.getElementsByTagName("script");
+      for (var i = all.length - 1; i >= 0; i--) {
+        if (all[i].src && all[i].src.indexOf("staff.js") >= 0) { el = all[i]; break; }
+      }
+    }
+    return el && el.src ? el.src.replace(/\/staff\.js(\?.*)?$/, "") : "./staff";
+  })();
+
   function printUrl(regId) {
     // Served from this app, not Apps Script. The Apps-Script-hosted Badge.html
     // identified the caller with Session.getActiveUser(), which is blank for
     // anyone but the script owner under executeAs: USER_DEPLOYING — so every
     // staff member got no_identity instead of a badge. This page is on our own
     // origin, so it reuses the ID token already in localStorage.
-    return "./staff/badge.html?eventId=" + encodeURIComponent(state.eventId) + "&regId=" + encodeURIComponent(regId);
+    return SELF_BASE + "/badge.html?eventId=" + encodeURIComponent(state.eventId) +
+      "&regId=" + encodeURIComponent(regId);
   }
 
   function saveWalkin() {
