@@ -34,6 +34,9 @@ button{font-family:inherit}
 .boot-slot{margin-top:26px;display:flex;justify-content:center;min-height:44px}
 .boot-err{margin-top:20px;padding:14px 16px;background:var(--bad-bg);color:var(--bad);
           font:400 12.5px/1.6 Prompt,sans-serif;text-align:left}
+.boot-note{margin-top:22px;padding:13px 15px;background:var(--paper);border:1px solid var(--hair);
+           font:300 11.5px/1.7 Prompt,sans-serif;color:var(--muted);text-align:left}
+.boot-note b{font-weight:600;color:var(--ink);word-break:break-all}
 
 /* ---- top bar ---- */
 .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;

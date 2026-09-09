@@ -245,17 +245,13 @@
         saveToken(resp.credential, decodeJwtExp(resp.credential));
         loadBootstrap();
       },
-      // Without this the only sign an origin is unregistered is a line in the
-      // browser console: the button still renders and pressing it does
-      // nothing, which reads as a broken app rather than a setting nobody has
-      // turned on yet.
+      // Catches what it can. It does NOT catch an unregistered origin with a
+      // rendered button — Google only routes that through here for One Tap,
+      // and otherwise just logs it to the console — which is why the sign-in
+      // screen carries a written note about it instead.
       error_callback: function (err) {
-        var t = (err && err.type) || "";
-        state.fatal = t === "unregistered_origin"
-          ? "โดเมนนี้ยังไม่ได้รับอนุญาตให้ใช้ Google Sign-In — " +
-            "ผู้ดูแลต้องเพิ่ม " + location.origin + " ใน Authorized JavaScript origins " +
-            "ของ OAuth client (Google Cloud Console → Credentials)"
-          : "เข้าสู่ระบบไม่สำเร็จ: " + ((err && err.message) || t || "ไม่ทราบสาเหตุ");
+        state.fatal = "เข้าสู่ระบบไม่สำเร็จ: " +
+          ((err && err.message) || (err && err.type) || "ไม่ทราบสาเหตุ");
         render();
       }
     });
@@ -522,6 +518,12 @@
       'ระบบจะบันทึกชื่อคุณไว้กับทุกการสแกน</div>' +
       '<div class="boot-slot" id="gis"></div>' +
       (state.fatal ? '<div class="boot-err">' + esc(state.fatal) + "</div>" : "") +
+      // An origin missing from the OAuth client renders a button that does
+      // nothing and reports it only to the browser console. Nobody at a door
+      // reads that, so the possibility is written where it will be looked for.
+      '<div class="boot-note">กดแล้วไม่มีอะไรเกิดขึ้น?<br>' +
+      'โดเมนนี้อาจยังไม่ได้รับอนุญาต — ผู้ดูแลต้องเพิ่ม<br><b>' + esc(location.origin) +
+      "</b><br>ใน Authorized JavaScript origins ของ OAuth client</div>" +
       "</div></div></div>";
   }
 
