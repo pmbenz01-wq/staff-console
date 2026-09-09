@@ -22,6 +22,7 @@
     online: true,
     camera: "off",                         // off | on | denied | unsupported
     attendees: [], attendeesQuery: "", attendeesBusy: false,
+    manual: "",                            // survives a re-render mid-typing
     history: [], historyBusy: false,
     busy: false, toast: "", fatal: ""
   };
@@ -412,11 +413,14 @@
       : r.result === "wrong_event" ? "บัตรของงานอื่น"
       : r.result === "bad_signature" ? "QR ไม่ถูกต้อง" : "ไม่พบรหัสนี้";
     var name = r.result === "ok" || r.result === "duplicate" ? (r.name || r.badgeCode || "—") : "ให้เข้าไม่ได้";
+    // Everything here is escaped before it goes in: paintVerdict writes meta as
+    // HTML so the offline message can carry a line break, and org, type and the
+    // operator's name are all values somebody typed into a form.
     var meta = "";
-    if (r.result === "ok") meta = [r.org, r.type].filter(Boolean).join(" · ");
+    if (r.result === "ok") meta = esc([r.org, r.type].filter(Boolean).join(" · "));
     else if (r.result === "duplicate") {
-      meta = "เช็คอินครั้งแรก " + (r.firstAt ? new Date(r.firstAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "—") +
-        (r.firstBy ? " · " + r.firstBy : "") + (r.firstGate ? " · " + r.firstGate : "");
+      meta = esc("เช็คอินครั้งแรก " + (r.firstAt ? new Date(r.firstAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "—") +
+        (r.firstBy ? " · " + r.firstBy : "") + (r.firstGate ? " · " + r.firstGate : ""));
     } else if (r.result === "wrong_event") meta = "QR ใบนี้ออกให้กับงานอื่น";
     else if (r.result === "bad_signature") meta = "ลายเซ็นไม่ผ่าน — บัตรนี้ไม่ได้ออกจากระบบ";
     else meta = "ไม่มีผู้ลงทะเบียนรหัสนี้ — ลองค้นด้วยชื่อแทน";
@@ -455,6 +459,9 @@
       (code ? '<div class="code">' + code + "</div>" : "") +
       '<div class="act">' + acts + "</div>" +
       '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>';
+    el.querySelectorAll("[data-act]").forEach(function (b) {
+      b.addEventListener("click", function (ev) { ev.stopPropagation(); act(b.dataset.act, b); });
+    });
     clearTimeout(verdictTimer);
     // Only a pass clears itself — it is the one the operator does nothing
     // about, and a full screen left up blocks the camera behind it.
@@ -498,8 +505,18 @@
     else if (state.phase === "boot") html = viewBoot();
     else html = viewApp();
     if (state.toast) html += '<div class="toast">' + esc(state.toast) + "</div>";
+    var focusId = document.activeElement && document.activeElement.id;
+    var caret = null;
+    try { if (focusId) caret = document.activeElement.selectionStart; } catch (e) {}
     app.innerHTML = html;
     bind();
+    if (focusId) {
+      var back = document.getElementById(focusId);
+      if (back && typeof back.focus === "function") {
+        back.focus();
+        try { if (caret != null) back.setSelectionRange(caret, caret); } catch (e) {}
+      }
+    }
     if (state.phase === "ready" && state.tab === "scan") mountCamera();
     if (state.phase === "signin") renderGis();
   }
@@ -593,7 +610,8 @@
         (state.online ? "" : '<div class="cam-down">รอเครือข่าย — ยังเช็คอินไม่ได้</div>') +
       "</div>" +
       '<div class="manual">' +
-        '<input id="manual" placeholder="พิมพ์รหัสบัตร เช่น TT-1A2B-901" autocomplete="off" autocapitalize="characters">' +
+        '<input id="manual" value="' + esc(state.manual) +
+        '" placeholder="พิมพ์รหัสบัตร เช่น TT-1A2B-901" autocomplete="off" autocapitalize="characters">' +
         '<button data-act="manual">เช็คอิน</button>' +
       "</div></div>";
   }
@@ -666,7 +684,7 @@
     });
     var v = document.getElementById("verdict");
     if (v) v.addEventListener("click", function (e) {
-      if (e.target === v || e.target.classList.contains("tap") || e.target.classList.contains("mark")) hideVerdict();
+      if (!e.target.closest("[data-act]")) hideVerdict();
     });
     var q = document.getElementById("q");
     if (q) {
@@ -677,7 +695,10 @@
       });
     }
     var m = document.getElementById("manual");
-    if (m) m.addEventListener("keydown", function (e) { if (e.key === "Enter") act("manual"); });
+    if (m) {
+      m.addEventListener("input", function () { state.manual = m.value; });
+      m.addEventListener("keydown", function (e) { if (e.key === "Enter") act("manual"); });
+    }
   }
 
   function act(what, el) {
@@ -702,10 +723,12 @@
       loadTab();
     } else if (what === "manual") {
       var input = document.getElementById("manual");
-      var code = (input && input.value || "").trim().toUpperCase();
+      var code = (input && input.value || state.manual || "").trim().toUpperCase();
       if (!code) return;
-      if (input) input.value = "";
-      submitScan({ badgeCode: code });
+      if (submitScan({ badgeCode: code })) {
+        state.manual = "";
+        if (input) input.value = "";
+      } else flash("กำลังบันทึกรายการก่อนหน้า — กดเช็คอินอีกครั้ง");
     } else if (what === "checkin") {
       var regId = el.dataset.id;
       state.busy = true;
@@ -735,7 +758,7 @@
   }
 
   document.addEventListener("visibilitychange", function () {
-    if (document.hidden && scanning) stopCamera();
+    if (document.hidden && scanning) { stopCamera(); render(); }
   });
 
   boot();
