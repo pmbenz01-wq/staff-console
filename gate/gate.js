@@ -626,7 +626,13 @@
       return '<div class="row"><div class="grow"><div class="nm">' + esc(a.name) + "</div>" +
         '<div class="sub">' + esc(a.code) + (a.org ? " · " + esc(a.org) : "") + "</div></div>" +
         '<span class="tag ' + (inn ? "t-in" : "t-out") + '">' + (inn ? "เข้าแล้ว" : "ยังไม่เข้า") + "</span>" +
-        (inn ? "" : '<button class="go" data-act="checkin" data-id="' + esc(a.regId) + '">เช็คอิน</button>') +
+        // One button per row, and which one follows from where the person is:
+        // not in yet, so let them in; already in, so print what they wear.
+        // Printing before a check-in would hand out a badge for someone the
+        // system has no record of admitting.
+        (inn
+          ? '<button class="go" data-act="print" data-id="' + esc(a.regId) + '">พิมพ์บัตร</button>'
+          : '<button class="go" data-act="checkin" data-id="' + esc(a.regId) + '">เช็คอิน</button>') +
         "</div>";
     }).join("");
     return '<div class="pane' + (state.tab === "list" ? " on" : "") + '"><div class="scroll">' +
