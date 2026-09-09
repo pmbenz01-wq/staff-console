@@ -1,0 +1,727 @@
+// 1neve Gate — the door's own app: scan, look someone up, see what was scanned.
+//
+// A second front end over the same Apps Script API the Staff Console uses, not
+// a second system. The console is a desk tool whose scan screen puts the result
+// 441px below the fold on a phone; this exists so the person holding the phone
+// can see what happened without scrolling. See docs/adr/events-checkin-0013.
+(function () {
+  "use strict";
+
+  var ID_TOKEN_KEY = "staff-id-token";     // shared shape with the console
+  var EVENT_KEY = "gate-event";
+  var DEVICE_KEY = "gate-device";
+  var GONE_MS = 1500;                      // a badge must leave frame to count again
+  var SCAN_TIMEOUT_MS = 25000;
+  var PASS_CLEAR_MS = 1900;                // only a pass clears itself
+  var PROBE_MS = 5000;                     // how often to re-test a dead network
+
+  var state = {
+    phase: "boot",                         // boot | signin | ready | error
+    me: null, events: [], eventId: null,
+    tab: "scan",
+    online: true,
+    camera: "off",                         // off | on | denied | unsupported
+    attendees: [], attendeesQuery: "", attendeesBusy: false,
+    history: [], historyBusy: false,
+    busy: false, toast: "", fatal: ""
+  };
+
+  var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
+  var raf = null, toastTimer = null, verdictTimer = null, probeTimer = null;
+
+  // ---------------------------------------------------------------------
+  // transport — identical contract to the console's callSvc
+  // ---------------------------------------------------------------------
+  function loadToken() {
+    try {
+      var raw = localStorage.getItem(ID_TOKEN_KEY);
+      if (!raw) return null;
+      var d = JSON.parse(raw);
+      if (!d.token || !d.exp || d.exp * 1000 < Date.now() + 30000) return null;
+      return d.token;
+    } catch (e) { return null; }
+  }
+  function saveToken(token, exp) {
+    try { localStorage.setItem(ID_TOKEN_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) {}
+  }
+  function clearToken() { try { localStorage.removeItem(ID_TOKEN_KEY); } catch (e) {} }
+
+  function decodeJwtExp(jwt) {
+    try {
+      var body = JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+      return body.exp || 0;
+    } catch (e) { return 0; }
+  }
+
+  function callSvc(action, payload) {
+    var idToken = loadToken();
+    if (idToken && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+      return fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: "staffCall", idToken: idToken, staffAction: action, payload: payload || {} })
+      }).then(function (r) { return r.json(); });
+    }
+    // Local dev harness only, same as the console — never present in production.
+    if (window.STAFF_DEV_API) {
+      return fetch(window.STAFF_DEV_API, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: action, payload: payload || {} })
+      }).then(function (r) { return r.json(); });
+    }
+    return Promise.reject(new Error("not_signed_in"));
+  }
+
+  function api(action, payload) {
+    return callSvc(action, payload).then(function (res) {
+      if (!res) throw new Error("empty_response");
+      if (!res.ok) throw new Error(res.error || "unknown_error");
+      markOnline(true);
+      return res.data;
+    });
+  }
+
+  // "Offline" means calls are not succeeding — not what navigator.onLine says.
+  // A phone joined to a venue's wifi that has lost its uplink reports itself
+  // online, which is exactly the case this has to catch (ADR 0017).
+  function markOnline(up) {
+    if (state.online === up) return;
+    state.online = up;
+    if (!up) startProbe(); else stopProbe();
+    render();
+  }
+  function startProbe() {
+    stopProbe();
+    probeTimer = setInterval(function () {
+      callSvc("whoAmI", {}).then(function (res) {
+        if (res && res.ok) return markOnline(true);
+        if (res && isAuthFailure(new Error(res.error || ""))) toSignIn();
+      }).catch(function (e) {
+        if (isAuthFailure(e)) toSignIn();      // otherwise the network is still down
+      });
+    }, PROBE_MS);
+  }
+  function stopProbe() { if (probeTimer) { clearInterval(probeTimer); probeTimer = null; } }
+
+  // A failed call is not always a dead network. A token that expired mid-shift
+  // fails every call too, and calling that "offline" sends the operator off to
+  // fight the venue's wifi when what they need is to sign in again.
+  function isAuthFailure(e) {
+    var m = String((e && e.message) || e);
+    return m.indexOf("invalid_id_token") >= 0 || m.indexOf("not_signed_in") >= 0 ||
+           m.indexOf("no_identity") >= 0 || m.indexOf("wrong_audience") >= 0 ||
+           m.indexOf("token_verify_failed") >= 0;
+  }
+
+  function toSignIn() {
+    stopProbe();
+    stopCamera();
+    clearToken();
+    state.phase = "signin";
+    state.fatal = "เซสชันหมดอายุ — ลงชื่อเข้าใช้อีกครั้ง";
+    render();
+    loadGis();
+  }
+
+  // Everything that can fail a call routes through here so each cause gets the
+  // response that actually helps: sign in again, wait for the network, or just
+  // say what the server said.
+  function handleFailure(e) {
+    if (isAuthFailure(e)) { toSignIn(); return "auth"; }
+    var m = String((e && e.message) || e);
+    // A transport failure has no server code to read — fetch throws a TypeError
+    // and a timeout carries our own marker.
+    if (e instanceof TypeError || m.indexOf("Failed to fetch") >= 0 ||
+        m.indexOf("NetworkError") >= 0 || m === "timeout" || m === "empty_response") {
+      markOnline(false);
+      return "offline";
+    }
+    return "server";
+  }
+
+  function deviceId() {
+    try {
+      var k = localStorage.getItem(DEVICE_KEY);
+      if (!k) { k = "GATE-" + Math.random().toString(36).slice(2, 6).toUpperCase(); localStorage.setItem(DEVICE_KEY, k); }
+      return k;
+    } catch (e) { return "GATE"; }
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function flash(msg) {
+    state.toast = msg;
+    render();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { state.toast = ""; render(); }, 2600);
+  }
+
+  function fail(e) {
+    var m = String((e && e.message) || e);
+    if (m.indexOf("forbidden_role") >= 0) return flash("สิทธิ์ของคุณไม่พอสำหรับการกระทำนี้");
+    if (m.indexOf("forbidden_event") >= 0) return flash("คุณไม่มีสิทธิ์ในงานนี้");
+    if (m.indexOf("not_authorized") >= 0) return flash("บัญชีนี้ยังไม่ได้อยู่ในทีมงาน");
+    if (m.indexOf("busy") >= 0) return flash("ระบบกำลังบันทึกรายการอื่น ลองอีกครั้ง");
+    flash("ทำรายการไม่สำเร็จ ลองใหม่อีกครั้ง");
+  }
+
+  // ---------------------------------------------------------------------
+  // boot
+  // ---------------------------------------------------------------------
+  function boot() {
+    app = document.getElementById("app");
+    if (!window.APP_CONFIG || !window.APP_CONFIG.APPS_SCRIPT_URL) {
+      if (!window.STAFF_DEV_API) {
+        state.phase = "error";
+        state.fatal = "ยังไม่ได้ตั้งค่า config.js — ต้องมี APPS_SCRIPT_URL และ GOOGLE_CLIENT_ID";
+        return render();
+      }
+    }
+    if (!loadToken() && !window.STAFF_DEV_API) {
+      state.phase = "signin";
+      render();
+      loadGis();
+      return;
+    }
+    loadBootstrap();
+  }
+
+  function loadBootstrap() {
+    state.phase = "boot";
+    render();
+    api("bootstrap", {}).then(function (d) {
+      state.me = d.me;
+      state.events = d.events || [];
+      var saved = null;
+      try { saved = localStorage.getItem(EVENT_KEY); } catch (e) {}
+      var known = state.events.some(function (e) { return e.id === saved; });
+      state.eventId = known ? saved : (state.events.length === 1 ? state.events[0].id : null);
+      state.phase = "ready";
+      render();
+      if (state.eventId) loadTab();
+    }).catch(function (e) {
+      var m = String((e && e.message) || e);
+      if (m.indexOf("invalid_id_token") >= 0 || m.indexOf("not_signed_in") >= 0) {
+        clearToken();
+        state.phase = "signin";
+        render();
+        loadGis();
+        return;
+      }
+      state.phase = "error";
+      state.fatal = m.indexOf("not_authorized") >= 0
+        ? "บัญชีนี้ยังไม่ได้ถูกเพิ่มเข้าทีมงาน — ให้แอดมินเพิ่มก่อน"
+        : "เชื่อมต่อระบบไม่สำเร็จ: " + m;
+      render();
+    });
+  }
+
+  function loadGis() {
+    if (window.google && window.google.accounts) return renderGis();
+    var s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.async = true;
+    s.onload = renderGis;
+    s.onerror = function () {
+      state.fatal = "โหลด Google Sign-In ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต";
+      render();
+    };
+    document.head.appendChild(s);
+  }
+
+  function renderGis() {
+    var clientId = window.APP_CONFIG && window.APP_CONFIG.GOOGLE_CLIENT_ID;
+    var slot = document.getElementById("gis");
+    if (!clientId || !slot || !window.google || !window.google.accounts) return;
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: function (resp) {
+        if (!resp || !resp.credential) return;
+        saveToken(resp.credential, decodeJwtExp(resp.credential));
+        loadBootstrap();
+      }
+    });
+    window.google.accounts.id.renderButton(slot, {
+      theme: "filled_black", size: "large", text: "signin_with", shape: "pill"
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // data per tab
+  // ---------------------------------------------------------------------
+  function loadTab() {
+    if (!state.eventId) return;
+    if (state.tab === "list") {
+      state.attendeesBusy = true; render();
+      api("attendees", { eventId: state.eventId, query: state.attendeesQuery })
+        .then(function (d) { state.attendees = d || []; state.attendeesBusy = false; render(); })
+        .catch(function (e) {
+          state.attendeesBusy = false;
+          if (handleFailure(e) === "server") fail(e);
+          render();
+        });
+    } else if (state.tab === "recent") {
+      state.historyBusy = true; render();
+      api("history", { eventId: state.eventId, filter: "all" })
+        .then(function (d) { state.history = d || []; state.historyBusy = false; render(); })
+        .catch(function (e) {
+          state.historyBusy = false;
+          if (handleFailure(e) === "server") fail(e);
+          render();
+        });
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // camera — off until asked (ADR 0018)
+  // ---------------------------------------------------------------------
+  function startCamera() {
+    if (scanning) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      state.camera = "unsupported"; render(); return;
+    }
+    scanning = true;
+    state.camera = "on";
+    render();
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then(function (stream) {
+        var video = camNode && camNode.querySelector("video");
+        if (!video) return;
+        video.srcObject = stream;
+        video.play();
+        requestAnimationFrame(tick);
+      })
+      .catch(function () {
+        scanning = false;
+        state.camera = "denied";
+        render();
+      });
+  }
+
+  function stopCamera() {
+    scanning = false;
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    var video = camNode && camNode.querySelector("video");
+    if (video && video.srcObject) {
+      video.srcObject.getTracks().forEach(function (t) { t.stop(); });
+      video.srcObject = null;
+    }
+    if (state.camera === "on") state.camera = "off";
+  }
+
+  function tick() {
+    if (!scanning) return;
+    var video = camNode && camNode.querySelector("video");
+    var canvas = camNode && camNode.querySelector("canvas");
+    if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA && window.jsQR) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      var ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      try {
+        var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        var code = window.jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+        var now = Date.now();
+        if (code && code.data) {
+          var fresh = code.data !== lastCode || now - lastCodeAt > GONE_MS;
+          if (!fresh) {
+            lastCodeAt = now;                    // same badge, still held up
+          } else if (submitScan({ qr: code.data })) {
+            // Only counts as seen once it actually went out, so a badge
+            // presented while an earlier scan is in flight is not swallowed.
+            lastCode = code.data;
+            lastCodeAt = now;
+          }
+        } else if (lastCode && now - lastCodeAt > GONE_MS) {
+          lastCode = "";                         // frame cleared, next person
+        }
+      } catch (err) { /* frame not ready */ }
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  // ---------------------------------------------------------------------
+  // scanning
+  // ---------------------------------------------------------------------
+  // Returns true when the scan was actually sent.
+  function submitScan(payload) {
+    if (state.busy) return false;
+    if (!state.online) { showOfflineVerdict(); return false; }
+    if (!state.eventId) return false;
+    state.busy = true;
+
+    payload.eventId = state.eventId;
+    payload.device = deviceId();
+    payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      state.busy = false;
+      markOnline(false);
+      // lastCode is left set on purpose: clearing it would make a badge still
+      // held in frame look new and re-send itself with nobody asking.
+      showOfflineVerdict();
+    }, SCAN_TIMEOUT_MS);
+
+
+    api("checkin", payload).then(function (r) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      state.busy = false;
+      showResult(r);
+      if (state.tab === "recent") loadTab();
+    }).catch(function (e) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      state.busy = false;
+      var kind = handleFailure(e);
+      if (kind === "offline") showOfflineVerdict();
+      else if (kind === "server") { fail(e); }
+      // an auth failure has already taken the app to the sign-in screen
+    });
+    return true;
+  }
+
+  var MARKS = {
+    ok:   '<path d="M5 13l5 5L23 5"/>',
+    dup:  '<path d="M12 6v9"/><path d="M12 20h.01"/>',
+    bad:  '<path d="M6 6l16 16M22 6L6 22"/>',
+    wait: '<circle cx="14" cy="14" r="11"/><path d="M14 8v6l4 3"/>'
+  };
+
+  function showResult(r) {
+    var kind = r.result === "ok" ? "ok" : r.result === "duplicate" ? "dup" : "bad";
+    var said = r.result === "ok" ? "เช็คอินสำเร็จ"
+      : r.result === "duplicate" ? "สแกนซ้ำ — เข้างานไปแล้ว"
+      : r.result === "wrong_event" ? "บัตรของงานอื่น"
+      : r.result === "bad_signature" ? "QR ไม่ถูกต้อง" : "ไม่พบรหัสนี้";
+    var name = r.result === "ok" || r.result === "duplicate" ? (r.name || r.badgeCode || "—") : "ให้เข้าไม่ได้";
+    var meta = "";
+    if (r.result === "ok") meta = [r.org, r.type].filter(Boolean).join(" · ");
+    else if (r.result === "duplicate") {
+      meta = "เช็คอินครั้งแรก " + (r.firstAt ? new Date(r.firstAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "—") +
+        (r.firstBy ? " · " + r.firstBy : "") + (r.firstGate ? " · " + r.firstGate : "");
+    } else if (r.result === "wrong_event") meta = "QR ใบนี้ออกให้กับงานอื่น";
+    else if (r.result === "bad_signature") meta = "ลายเซ็นไม่ผ่าน — บัตรนี้ไม่ได้ออกจากระบบ";
+    else meta = "ไม่มีผู้ลงทะเบียนรหัสนี้ — ลองค้นด้วยชื่อแทน";
+
+    var acts = "";
+    if (r.result === "ok" && r.regId) {
+      acts = '<button data-act="print" data-id="' + esc(r.regId) + '">พิมพ์บัตร</button>' +
+             '<button class="ghost" data-act="dismiss">ถัดไป</button>';
+    } else if (kind === "bad") {
+      acts = '<button data-act="tolist">ค้นด้วยชื่อ</button><button class="ghost" data-act="dismiss">ปิด</button>';
+    } else {
+      acts = '<button data-act="dismiss">รับทราบ</button>';
+    }
+
+    paintVerdict(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
+    beep(r.result === "ok" ? 880 : 220);
+  }
+
+  function showOfflineVerdict() {
+    paintVerdict("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
+      "ตรวจบัตรต้องใช้เซิร์ฟเวอร์ ระบบจึงยังยืนยันไม่ได้ว่าบัตรใบนี้ของจริง<br>" +
+      "ลองใหม่เมื่อป้ายด้านบนกลับเป็นออนไลน์", "",
+      '<button data-act="dismiss">รับทราบ</button>', false);
+    beep(220);
+  }
+
+  function paintVerdict(kind, said, name, meta, code, acts, autoClear) {
+    var el = document.getElementById("verdict");
+    if (!el) return;
+    el.className = "verdict v-" + kind + " up";
+    el.innerHTML =
+      '<svg class="mark" viewBox="0 0 28 28">' + (MARKS[kind] || "") + "</svg>" +
+      '<div class="said">' + esc(said) + "</div>" +
+      '<div class="name">' + esc(name) + "</div>" +
+      '<div class="meta">' + meta + "</div>" +
+      (code ? '<div class="code">' + code + "</div>" : "") +
+      '<div class="act">' + acts + "</div>" +
+      '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>';
+    clearTimeout(verdictTimer);
+    // Only a pass clears itself — it is the one the operator does nothing
+    // about, and a full screen left up blocks the camera behind it.
+    if (autoClear) verdictTimer = setTimeout(hideVerdict, PASS_CLEAR_MS);
+  }
+
+  function hideVerdict() {
+    clearTimeout(verdictTimer);
+    var el = document.getElementById("verdict");
+    // Only the visibility class comes off. Clearing the whole className would
+    // take the colour with it at once, so the panel would blink transparent
+    // while the opacity was still fading.
+    if (el) el.classList.remove("up");
+  }
+
+  function beep(freq) {
+    try {
+      var C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return;
+      var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(.06, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + .18);
+      o.start(); o.stop(ctx.currentTime + .2);
+    } catch (e) { /* sound is a bonus, never the only signal */ }
+  }
+
+  function printUrl(regId) {
+    return "./badge.html?eventId=" + encodeURIComponent(state.eventId) +
+      "&regId=" + encodeURIComponent(regId);
+  }
+
+  // ---------------------------------------------------------------------
+  // render
+  // ---------------------------------------------------------------------
+  function render() {
+    if (!app) return;
+    var html;
+    if (state.phase === "signin") html = viewSignIn();
+    else if (state.phase === "error") html = viewFatal();
+    else if (state.phase === "boot") html = viewBoot();
+    else html = viewApp();
+    if (state.toast) html += '<div class="toast">' + esc(state.toast) + "</div>";
+    app.innerHTML = html;
+    bind();
+    if (state.phase === "ready" && state.tab === "scan") mountCamera();
+    if (state.phase === "signin") renderGis();
+  }
+
+  function viewBoot() {
+    return '<div class="app"><div class="boot"><div>' +
+      '<div class="boot-kicker">1NEVE GATE</div>' +
+      '<div class="boot-title">กำลังเปิดระบบ…</div></div></div></div>';
+  }
+
+  function viewSignIn() {
+    return '<div class="app"><div class="boot"><div>' +
+      '<div class="boot-kicker">1NEVE GATE</div>' +
+      '<div class="boot-title">เช็คอินหน้างาน</div>' +
+      '<div class="boot-sub">ลงชื่อเข้าใช้ด้วยบัญชี Google ที่อยู่ในทีมงาน<br>' +
+      'ระบบจะบันทึกชื่อคุณไว้กับทุกการสแกน</div>' +
+      '<div class="boot-slot" id="gis"></div>' +
+      (state.fatal ? '<div class="boot-err">' + esc(state.fatal) + "</div>" : "") +
+      "</div></div></div>";
+  }
+
+  function viewFatal() {
+    return '<div class="app"><div class="boot"><div>' +
+      '<div class="boot-kicker">1NEVE GATE</div>' +
+      '<div class="boot-title">เปิดระบบไม่ได้</div>' +
+      '<div class="boot-err">' + esc(state.fatal) + "</div>" +
+      '<div class="boot-slot"><button class="cam-start" data-act="retry">ลองใหม่</button></div>' +
+      "</div></div></div>";
+  }
+
+  function currentEvent() {
+    for (var i = 0; i < state.events.length; i++) {
+      if (state.events[i].id === state.eventId) return state.events[i];
+    }
+    return null;
+  }
+
+  function viewApp() {
+    var ev = currentEvent();
+    var bar =
+      '<div class="bar">' +
+        '<div class="who"><b>' + esc((state.me && state.me.name) || "") + "</b>" +
+        '<span data-act="pickevent">' + esc((state.me && state.me.gate) || "—") + " · " +
+        esc(ev ? ev.name : "เลือกงาน") + " ▾</span></div>" +
+        '<button class="net' + (state.online ? "" : " is-down") + '" data-act="probe">' +
+        '<i class="dot"></i>' + (state.online ? "ออนไลน์" : "ออฟไลน์ · หยุดรับ") + "</button>" +
+      "</div>";
+
+    var tabs =
+      '<div class="tabs">' +
+        tabBtn("scan", "สแกน", '<path d="M4 8V5a1 1 0 011-1h3M20 8V5a1 1 0 00-1-1h-3M4 16v3a1 1 0 001 1h3M20 16v3a1 1 0 01-1 1h-3M3 12h18"/>') +
+        tabBtn("list", "รายชื่อ", '<path d="M4 6h16M4 12h16M4 18h10"/>') +
+        tabBtn("recent", "เพิ่งสแกน", '<path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="8"/>') +
+      "</div>";
+
+    return '<div class="app">' + bar +
+      viewScan() + viewList() + viewRecent() + tabs +
+      '<div class="verdict" id="verdict"></div>' +
+      (state.eventId ? "" : viewPicker()) +
+      "</div>";
+  }
+
+  function tabBtn(id, label, path) {
+    return '<button class="' + (state.tab === id ? "on" : "") + '" data-act="tab" data-id="' + id + '">' +
+      '<svg viewBox="0 0 24 24">' + path + "</svg>" + label + "</button>";
+  }
+
+  function viewScan() {
+    var off = "";
+    if (state.camera !== "on") {
+      var msg = state.camera === "denied"
+        ? "ไม่ได้รับสิทธิ์ใช้กล้อง — เปิดสิทธิ์ในตั้งค่าเบราว์เซอร์ หรือพิมพ์รหัสบัตรด้านล่างแทน"
+        : state.camera === "unsupported"
+        ? "อุปกรณ์นี้เปิดกล้องไม่ได้ — ใช้ช่องพิมพ์รหัสบัตรด้านล่างแทน"
+        : "กล้องยังไม่เปิด กดปุ่มด้านล่างเมื่อพร้อมสแกน";
+      off = '<div class="cam-off"><div><p>' + esc(msg) + "</p>" +
+        (state.camera === "off" ? '<button class="cam-start" data-act="camon">เริ่มสแกน</button>' : "") +
+        "</div></div>";
+    }
+    return '<div class="pane' + (state.tab === "scan" ? " on" : "") + '">' +
+      '<div class="cam" id="cam">' +
+        '<div class="frame"><i></i><i></i><i></i><i></i></div>' +
+        '<div class="hint">วาง QR ของผู้เข้าร่วมให้อยู่ในกรอบ</div>' +
+        off +
+        (state.online ? "" : '<div class="cam-down">รอเครือข่าย — ยังเช็คอินไม่ได้</div>') +
+      "</div>" +
+      '<div class="manual">' +
+        '<input id="manual" placeholder="พิมพ์รหัสบัตร เช่น TT-1A2B-901" autocomplete="off" autocapitalize="characters">' +
+        '<button data-act="manual">เช็คอิน</button>' +
+      "</div></div>";
+  }
+
+  function viewList() {
+    var rows;
+    if (state.attendeesBusy) rows = '<div class="empty">กำลังโหลด…</div>';
+    else if (!state.attendees.length) rows = '<div class="empty">' +
+      (state.attendeesQuery ? "ไม่พบชื่อที่ค้นหา" : "ยังไม่มีผู้ลงทะเบียน") + "</div>";
+    else rows = state.attendees.map(function (a) {
+      var inn = a.status === "checked_in";
+      return '<div class="row"><div class="grow"><div class="nm">' + esc(a.name) + "</div>" +
+        '<div class="sub">' + esc(a.code) + (a.org ? " · " + esc(a.org) : "") + "</div></div>" +
+        '<span class="tag ' + (inn ? "t-in" : "t-out") + '">' + (inn ? "เข้าแล้ว" : "ยังไม่เข้า") + "</span>" +
+        (inn ? "" : '<button class="go" data-act="checkin" data-id="' + esc(a.regId) + '">เช็คอิน</button>') +
+        "</div>";
+    }).join("");
+    return '<div class="pane' + (state.tab === "list" ? " on" : "") + '"><div class="scroll">' +
+      '<div class="search"><input id="q" value="' + esc(state.attendeesQuery) +
+      '" placeholder="ค้นหาชื่อ หรือรหัสบัตร"></div>' + rows + "</div></div>";
+  }
+
+  function viewRecent() {
+    var rows;
+    if (state.historyBusy) rows = '<div class="empty">กำลังโหลด…</div>';
+    else if (!state.history.length) rows = '<div class="empty">ยังไม่มีการสแกนในงานนี้</div>';
+    else rows = state.history.map(function (h) {
+      var cls = h.result === "ok" ? "t-in" : h.result === "duplicate" ? "t-dup" : "t-bad";
+      var lab = h.result === "ok" ? "เข้าแล้ว" : h.result === "duplicate" ? "ซ้ำ" : "ปฏิเสธ";
+      return '<div class="row"><div class="time">' + esc(h.time) + "</div>" +
+        '<div class="grow"><div class="nm">' + esc(h.name || "—") + "</div>" +
+        '<div class="sub">' + esc(h.code) + (h.by ? " · " + esc(h.by) : "") + "</div></div>" +
+        '<span class="tag ' + cls + '">' + lab + "</span></div>";
+    }).join("");
+    return '<div class="pane' + (state.tab === "recent" ? " on" : "") + '"><div class="scroll">' +
+      '<div class="cap">ทุกการสแกนของงานนี้ · ล่าสุด 300 รายการ</div>' + rows + "</div></div>";
+  }
+
+  function viewPicker() {
+    var list = state.events.map(function (e) {
+      return '<button class="ev' + (e.id === state.eventId ? " on" : "") + '" data-act="setevent" data-id="' + esc(e.id) + '">' +
+        "<b>" + esc(e.name) + "</b><span>" + esc(e.date || "") + (e.hidden ? " · ซ่อนจากลูกค้า" : "") + "</span></button>";
+    }).join("");
+    return '<div class="sheet"><div class="sheet-in"><h2>เลือกงาน</h2>' +
+      "<p>เครื่องนี้จะจำงานที่เลือกไว้ เปลี่ยนได้จากแถบบน</p>" +
+      (list || '<div class="empty">บัญชีนี้ยังไม่ได้รับสิทธิ์งานใด</div>') + "</div></div>";
+  }
+
+  function mountCamera() {
+    var slot = document.getElementById("cam");
+    if (!slot) return;
+    if (!camNode) {
+      camNode = document.createElement("div");
+      camNode.style.cssText = "position:absolute;inset:0;z-index:1";
+      camNode.innerHTML = '<video playsinline muted></video><canvas></canvas>';
+    }
+    // Re-appended rather than rebuilt, so the stream survives a re-render.
+    slot.insertBefore(camNode, slot.firstChild);
+  }
+
+  // ---------------------------------------------------------------------
+  // events
+  // ---------------------------------------------------------------------
+  function bind() {
+    app.querySelectorAll("[data-act]").forEach(function (el) {
+      el.addEventListener("click", function (e) {
+        e.stopPropagation();
+        act(el.dataset.act, el);
+      });
+    });
+    var v = document.getElementById("verdict");
+    if (v) v.addEventListener("click", function (e) {
+      if (e.target === v || e.target.classList.contains("tap") || e.target.classList.contains("mark")) hideVerdict();
+    });
+    var q = document.getElementById("q");
+    if (q) {
+      q.addEventListener("input", function () {
+        state.attendeesQuery = q.value;
+        clearTimeout(q.__t);
+        q.__t = setTimeout(loadTab, 350);
+      });
+    }
+    var m = document.getElementById("manual");
+    if (m) m.addEventListener("keydown", function (e) { if (e.key === "Enter") act("manual"); });
+  }
+
+  function act(what, el) {
+    if (what === "tab") {
+      var next = el.dataset.id;
+      if (next === state.tab) return;
+      if (state.tab === "scan") stopCamera();
+      state.tab = next;
+      render();
+      loadTab();
+    } else if (what === "camon") {
+      startCamera();
+    } else if (what === "dismiss") {
+      hideVerdict();
+    } else if (what === "print") {
+      window.open(printUrl(el.dataset.id), "_blank");
+    } else if (what === "tolist") {
+      hideVerdict();
+      if (state.tab === "scan") stopCamera();
+      state.tab = "list";
+      render();
+      loadTab();
+    } else if (what === "manual") {
+      var input = document.getElementById("manual");
+      var code = (input && input.value || "").trim().toUpperCase();
+      if (!code) return;
+      if (input) input.value = "";
+      submitScan({ badgeCode: code });
+    } else if (what === "checkin") {
+      var regId = el.dataset.id;
+      state.busy = true;
+      api("setCheckedIn", { eventId: state.eventId, regId: regId, on: true })
+        .then(function () { state.busy = false; flash("เช็คอินแล้ว"); loadTab(); })
+        .catch(function (e) {
+          state.busy = false;
+          if (handleFailure(e) === "server") fail(e);
+        });
+    } else if (what === "pickevent") {
+      state.eventId = null;
+      render();
+    } else if (what === "setevent") {
+      state.eventId = el.dataset.id;
+      try { localStorage.setItem(EVENT_KEY, state.eventId); } catch (e) {}
+      render();
+      loadTab();
+    } else if (what === "probe") {
+      callSvc("whoAmI", {}).then(function (res) {
+        if (res && res.ok) { markOnline(true); flash("เชื่อมต่อได้แล้ว"); }
+        else flash("ยังเชื่อมต่อไม่ได้");
+      }).catch(function () { flash("ยังเชื่อมต่อไม่ได้"); });
+    } else if (what === "retry") {
+      state.fatal = "";
+      boot();
+    }
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && scanning) stopCamera();
+  });
+
+  boot();
+})();

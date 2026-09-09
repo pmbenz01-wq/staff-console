@@ -1,0 +1,165 @@
+/* The customer site's world — cream ground, vermilion accent, square edges
+   with pill buttons — so a guest glancing at the staff phone sees the same
+   brand they registered on. The camera keeps a dark well because that is what
+   a live video feed is, not a theme choice. */
+:root{
+  --cream:#f4f1e6; --paper:#fff5ef; --imgbg:#e8e4d6;
+  --ink:#17150f; --muted:#7d7767; --faint:#a9a290;
+  --rule:#c9c3b0; --hair:#ddd7c4;
+  --accent:#d8482b;
+  /* Traffic-light logic, not the console's: a repeat scan is a real guest who
+     is already inside (warn), a rejected badge is someone who cannot go in
+     (stop). Every hue is one this project already uses. */
+  --ok:#2f6b4f;   --ok-bg:#e9f0ea;
+  --dup:#8a6512;  --dup-bg:#f6efdf;
+  --bad:#c1391f;  --bad-bg:#fbeae7;
+  --wait:#2f4d8c; --wait-bg:#e9edf5;
+  --well:#13110c;
+}
+*{box-sizing:border-box}
+html{background:var(--cream)}
+body{margin:0;background:var(--cream);color:var(--ink);
+     font-family:Prompt,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+     overscroll-behavior:none}
+button{font-family:inherit}
+
+.app{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;
+     background:var(--cream);position:relative}
+
+/* ---- boot / sign-in ---- */
+.boot{flex:1;display:grid;place-items:center;padding:40px 28px;text-align:center}
+.boot-kicker{font:600 9px Prompt,sans-serif;letter-spacing:.2em;color:var(--accent)}
+.boot-title{font:600 30px/1.15 Prompt,sans-serif;letter-spacing:-.02em;margin-top:12px;text-wrap:balance}
+.boot-sub{font:300 13px/1.7 Prompt,sans-serif;color:var(--muted);margin-top:12px;max-width:26em}
+.boot-slot{margin-top:26px;display:flex;justify-content:center;min-height:44px}
+.boot-err{margin-top:20px;padding:14px 16px;background:var(--bad-bg);color:var(--bad);
+          font:400 12.5px/1.6 Prompt,sans-serif;text-align:left}
+
+/* ---- top bar ---- */
+.bar{display:flex;align-items:center;justify-content:space-between;gap:10px;
+     padding:calc(14px + env(safe-area-inset-top,0)) 20px 13px;
+     border-bottom:1px solid var(--hair);flex:none}
+.who{min-width:0}
+.who b{display:block;font:600 13.5px Prompt,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who span{font:600 8.5px Prompt,sans-serif;letter-spacing:.14em;color:var(--muted);
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.net{flex:none;display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:99px;
+     font:500 11px Prompt,sans-serif;background:var(--paper);color:var(--muted);
+     border:1px solid var(--hair);cursor:pointer}
+.net.is-down{background:var(--wait-bg);color:var(--wait);border-color:var(--wait)}
+.dot{width:6px;height:6px;border-radius:99px;background:var(--ok);flex:none}
+.net.is-down .dot{background:var(--wait)}
+
+/* ---- panes ---- */
+.pane{flex:1;display:none;flex-direction:column;min-height:0}
+.pane.on{display:flex}
+
+/* ---- camera ---- */
+.cam{position:relative;flex:1;min-height:280px;background:var(--well);overflow:hidden;
+     display:grid;place-items:center}
+.cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cam canvas{display:none}
+.frame{position:relative;width:64%;max-width:280px;aspect-ratio:1;pointer-events:none;z-index:2}
+.frame i{position:absolute;width:26px;height:26px;border:2px solid var(--accent)}
+.frame i:nth-child(1){top:0;left:0;border-right:0;border-bottom:0}
+.frame i:nth-child(2){top:0;right:0;border-left:0;border-bottom:0}
+.frame i:nth-child(3){bottom:0;left:0;border-right:0;border-top:0}
+.frame i:nth-child(4){bottom:0;right:0;border-left:0;border-top:0}
+.hint{position:absolute;left:0;right:0;bottom:16px;text-align:center;z-index:2;
+      font:400 12px Prompt,sans-serif;color:rgba(244,241,230,.72);pointer-events:none;padding:0 24px}
+
+/* the camera does not run until asked (ADR 0018) */
+.cam-off{position:absolute;inset:0;z-index:4;display:grid;place-items:center;
+         background:radial-gradient(circle at 50% 42%,#241f18,#0c0b08);padding:0 32px;text-align:center}
+.cam-off p{font:300 12.5px/1.7 Prompt,sans-serif;color:#8a8474;margin:0 0 20px}
+.cam-start{background:var(--accent);color:#fff;border:0;border-radius:99px;
+           padding:16px 30px;font:600 14px Prompt,sans-serif;cursor:pointer}
+.cam-down{position:absolute;inset:0;z-index:5;display:grid;place-items:center;padding:0 34px;
+          background:rgba(47,77,140,.94);color:#fff;text-align:center;
+          font:600 15px/1.6 Prompt,sans-serif}
+
+/* ---- the verdict fills the screen ---- */
+.verdict{position:fixed;inset:0;z-index:60;opacity:0;pointer-events:none;
+         transition:opacity .14s ease;color:#fff;padding:38px 30px;
+         display:flex;flex-direction:column;justify-content:center}
+.verdict.up{opacity:1;pointer-events:auto}
+.verdict .mark{width:62px;height:62px;stroke:#fff;fill:none;stroke-width:2.2;
+               stroke-linecap:round;stroke-linejoin:round;margin-bottom:20px;opacity:.95}
+.verdict .said{font:600 11px Prompt,sans-serif;letter-spacing:.16em;text-transform:uppercase;
+               color:rgba(255,255,255,.82)}
+.verdict .name{font:600 40px/1.07 Prompt,sans-serif;letter-spacing:-.02em;margin-top:13px;
+               word-break:break-word;text-wrap:balance}
+.verdict .meta{font:400 15px/1.55 Prompt,sans-serif;margin-top:11px;color:rgba(255,255,255,.86)}
+.verdict .code{font:600 13px Prompt,sans-serif;letter-spacing:.1em;margin-top:18px;color:rgba(255,255,255,.7)}
+.verdict .act{margin-top:30px;display:flex;gap:10px;flex-wrap:wrap}
+.verdict button{border:0;border-radius:99px;padding:16px 28px;cursor:pointer;
+                font:600 14px Prompt,sans-serif;background:#fff}
+.verdict .ghost{background:transparent;box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.6);color:#fff}
+.verdict .tap{position:absolute;left:0;right:0;bottom:calc(26px + env(safe-area-inset-bottom,0));
+              text-align:center;font:400 11.5px Prompt,sans-serif;color:rgba(255,255,255,.6)}
+.v-ok{background:var(--ok)}   .v-ok button{color:var(--ok)}
+.v-dup{background:var(--dup)} .v-dup button{color:var(--dup)}
+.v-bad{background:var(--bad)} .v-bad button{color:var(--bad)}
+.v-wait{background:var(--wait)} .v-wait button{color:var(--wait)}
+
+/* ---- code entry ---- */
+.manual{flex:none;display:flex;gap:9px;padding:12px 18px;border-top:1px solid var(--hair);
+        background:var(--cream)}
+.manual input{flex:1;min-width:0;background:var(--paper);border:1px solid var(--rule);color:var(--ink);
+              padding:13px 14px;font:400 15px Prompt,sans-serif;outline:none}
+.manual input::placeholder{color:var(--faint)}
+.manual input:focus{border-color:var(--ink)}
+.manual button{flex:none;background:var(--accent);color:#fff;border:0;border-radius:99px;
+               padding:0 22px;font:600 13px Prompt,sans-serif;cursor:pointer}
+
+/* ---- lists ---- */
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.search{padding:12px 18px;border-bottom:1px solid var(--hair);position:sticky;top:0;
+        background:var(--cream);z-index:2}
+.search input{width:100%;background:var(--paper);border:1px solid var(--rule);color:var(--ink);
+              padding:13px 14px;font:400 15px Prompt,sans-serif;outline:none}
+.search input::placeholder{color:var(--faint)}
+.search input:focus{border-color:var(--ink)}
+.cap{padding:11px 18px;font:600 8.5px Prompt,sans-serif;letter-spacing:.16em;color:var(--muted);
+     border-bottom:1px solid var(--hair);background:var(--paper)}
+.row{display:flex;align-items:center;gap:11px;padding:13px 18px;border-bottom:1px solid var(--hair)}
+.row .grow{flex:1;min-width:0}
+.row .nm{font:500 14.5px Prompt,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .sub{font:400 11.5px Prompt,sans-serif;color:var(--muted);margin-top:3px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .time{flex:none;width:44px;font:600 11px Prompt,sans-serif;color:var(--muted)}
+.tag{flex:none;font:600 8.5px Prompt,sans-serif;letter-spacing:.12em;padding:5px 10px;
+     border-radius:99px;white-space:nowrap}
+.t-in{background:var(--ok-bg);color:var(--ok)}
+.t-out{background:var(--imgbg);color:var(--muted)}
+.t-dup{background:var(--dup-bg);color:var(--dup)}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.row .go{flex:none;background:transparent;border:1px solid var(--rule);color:var(--ink);
+         border-radius:99px;padding:9px 14px;font:600 11.5px Prompt,sans-serif;cursor:pointer}
+.empty{padding:44px 22px;text-align:center;font:300 13px/1.7 Prompt,sans-serif;color:var(--muted)}
+
+/* ---- tabs ---- */
+.tabs{flex:none;display:flex;border-top:1px solid var(--hair);background:var(--paper);
+      padding-bottom:env(safe-area-inset-bottom,0)}
+.tabs button{flex:1;background:transparent;border:0;color:var(--muted);cursor:pointer;
+             padding:11px 4px 13px;font:500 11.5px Prompt,sans-serif;display:flex;
+             flex-direction:column;align-items:center;gap:5px}
+.tabs button.on{color:var(--accent)}
+.tabs svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6}
+
+/* ---- event picker sheet ---- */
+.sheet{position:fixed;inset:0;z-index:70;background:rgba(23,21,15,.5);display:grid;place-items:end center}
+.sheet-in{width:100%;max-width:480px;background:var(--cream);padding:22px 20px calc(22px + env(safe-area-inset-bottom,0))}
+.sheet-in h2{font:600 18px Prompt,sans-serif;margin:0 0 4px}
+.sheet-in p{font:300 12.5px/1.6 Prompt,sans-serif;color:var(--muted);margin:0 0 16px}
+.ev{width:100%;text-align:left;background:var(--paper);border:1px solid var(--rule);
+    padding:14px 16px;margin-bottom:9px;cursor:pointer;display:block}
+.ev.on{border-color:var(--ink)}
+.ev b{display:block;font:500 14.5px Prompt,sans-serif}
+.ev span{display:block;font:400 11.5px Prompt,sans-serif;color:var(--muted);margin-top:3px}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:96px;z-index:80;
+       background:rgba(23,21,15,.92);color:#fff5ef;padding:11px 18px;border-radius:99px;
+       font:500 12.5px Prompt,sans-serif;pointer-events:none;max-width:88vw;text-align:center}
+
+@media (prefers-reduced-motion:reduce){.verdict{transition:none}}
