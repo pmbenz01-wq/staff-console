@@ -244,6 +244,19 @@
         if (!resp || !resp.credential) return;
         saveToken(resp.credential, decodeJwtExp(resp.credential));
         loadBootstrap();
+      },
+      // Without this the only sign an origin is unregistered is a line in the
+      // browser console: the button still renders and pressing it does
+      // nothing, which reads as a broken app rather than a setting nobody has
+      // turned on yet.
+      error_callback: function (err) {
+        var t = (err && err.type) || "";
+        state.fatal = t === "unregistered_origin"
+          ? "โดเมนนี้ยังไม่ได้รับอนุญาตให้ใช้ Google Sign-In — " +
+            "ผู้ดูแลต้องเพิ่ม " + location.origin + " ใน Authorized JavaScript origins " +
+            "ของ OAuth client (Google Cloud Console → Credentials)"
+          : "เข้าสู่ระบบไม่สำเร็จ: " + ((err && err.message) || t || "ไม่ทราบสาเหตุ");
+        render();
       }
     });
     window.google.accounts.id.renderButton(slot, {
