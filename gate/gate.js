@@ -410,6 +410,15 @@
 
   function tick(gen) {
     if (!scanning || gen !== scanGen) return;
+    // Nothing is read while a check is in flight. submitScan would refuse it
+    // anyway, so running jsQR over every frame for five seconds only to throw
+    // the answer away is battery a phone working a door all day does not have
+    // to spare. The rAF loop itself keeps running: it costs nothing and means
+    // reading resumes the moment the answer lands, with no camera restart.
+    if (state.busy) {
+      raf = requestAnimationFrame(function () { tick(gen); });
+      return;
+    }
     var video = camNode && camNode.querySelector("video");
     var canvas = camNode && camNode.querySelector("canvas");
     if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA && window.jsQR) {
