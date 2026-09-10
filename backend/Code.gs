@@ -464,6 +464,11 @@ function login_(email, password) {
   var now = new Date();
   var exp = new Date(now.getTime() + SESSION_HOURS * 3600 * 1000);
   sessionSheet_().appendRow([tokenHash_(token), em, now.toISOString(), exp.toISOString(), false]);
+  // The very first password sign-in creates the Sessions sheet and writes to it
+  // in one execution; without this the next request read a view that did not
+  // have the row yet and answered invalid_session to a token issued seconds
+  // earlier. Seen once, on the first login this system ever had.
+  SpreadsheetApp.flush();
   return {
     sessionToken: token,
     exp: Math.floor(exp.getTime() / 1000),
