@@ -135,7 +135,7 @@
     showInvite: false,
     ne: { name: "", date: "", place: "", theme: "editorial", error: "" },
     walkin: { name: "", email: "", phone: "", type: "ทั่วไป" },
-    invite: { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "" },
+    invite: { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "", withPw: false },
     newField: "",
     toast: "",
     busy: false,
@@ -793,25 +793,35 @@
     }).join("");
 
     var invite = state.showInvite ? '<div class="walkin">' +
-      '<div class="modal-head"><div class="modal-title">เชิญเจ้าหน้าที่ด้วยอีเมล Google</div>' +
+      '<div class="modal-head"><div class="modal-title">' +
+      (state.invite.withPw ? "เพิ่มเจ้าหน้าที่ด้วยอีเมล + รหัสผ่าน" : "เชิญเจ้าหน้าที่ด้วยอีเมล Google") + "</div>" +
       '<div class="modal-close" data-act="toggle-invite">ปิด ✕</div></div>' +
+      '<div class="pills"><div class="pill' + (state.invite.withPw ? "" : " is-active") + '" data-act="invite-kind" data-id="google">บัญชี Google</div>' +
+      '<div class="pill' + (state.invite.withPw ? " is-active" : "") + '" data-act="invite-kind" data-id="password">อีเมล + รหัสผ่าน</div></div>' +
       '<div class="field-row">' +
-      '<div class="field"><div class="field-label">อีเมล Google *</div><input id="inv-email" value="' + esc(state.invite.email) + '" placeholder="name@gmail.com" /></div>' +
+      '<div class="field"><div class="field-label">อีเมล *</div><input id="inv-email" value="' + esc(state.invite.email) + '" placeholder="' + (state.invite.withPw ? "name@company.com" : "name@gmail.com") + '" /></div>' +
       '<div class="field"><div class="field-label">ชื่อแสดงผล</div><input id="inv-name" value="' + esc(state.invite.name) + '" placeholder="ไม่ใส่ก็ได้" /></div>' +
       '<div class="field"><div class="field-label">ประตู/จุดประจำ</div><input id="inv-gate" value="' + esc(state.invite.gate) + '" placeholder="เช่น ประตู A" /></div>' +
+      (state.invite.withPw
+        ? '<div class="field"><div class="field-label">รหัสผ่าน * (อย่างน้อย 8 ตัว)</div>' +
+          '<input id="inv-pass" type="password" autocomplete="new-password" placeholder="ตั้งรหัสผ่านให้คนนี้" /></div>'
+        : "") +
       "</div>" +
       '<div><div class="side-kicker" style="margin-bottom:9px">บทบาท</div><div class="pills">' + rolePills + "</div></div>" +
       '<div><div class="side-kicker" style="margin-bottom:9px">ขอบเขตงานที่เห็น</div><div class="pills">' + scopePills + "</div></div>" +
       '<div class="err">' + esc(state.invite.error) + "</div>" +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
       '<button class="btn-light" data-act="save-invite">เพิ่มเข้าทีม</button>' +
-      '<div class="muted">คนนั้นต้องล็อกอินด้วยอีเมลนี้เป๊ะๆ ถึงจะเข้าได้ — แค่เพิ่มชื่อยังไม่ได้ตรวจสอบว่าอีเมลมีจริง</div></div></div>' : "";
+      '<div class="muted">' + (state.invite.withPw
+        ? "คนนี้เข้าใช้งานได้ทันทีด้วยอีเมลและรหัสผ่านนี้ ไม่ต้องมีบัญชี Google · ระบบเก็บเฉพาะค่าที่ผ่านการแฮชแล้ว ถ้าลืมต้องตั้งใหม่"
+        : "คนนั้นต้องล็อกอินด้วยอีเมลนี้เป๊ะๆ ถึงจะเข้าได้ — แค่เพิ่มชื่อยังไม่ได้ตรวจสอบว่าอีเมลมีจริง") +
+      "</div></div></div>" : "";
 
     return '<div class="page" style="max-width:820px">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap">' +
       '<div><div class="page-title">ทีมงานและสิทธิ์การเข้าถึง</div>' +
       '<div class="page-sub">เจ้าหน้าที่เข้าใช้งานด้วยบัญชี Google ของตนเอง · แก้ไขรายชื่อได้ในไฟล์ Team Access</div></div>' +
-      (can("ADMIN") ? '<button class="btn-gold" data-act="toggle-invite">+ เชิญเจ้าหน้าที่ด้วยอีเมล Google</button>' : "") +
+      (can("ADMIN") ? '<button class="btn-gold" data-act="toggle-invite">+ เพิ่มเจ้าหน้าที่</button>' : "") +
       "</div>" +
       invite +
       '<div class="card">' + (rows || '<div class="empty">ยังไม่มีทีมงาน</div>') + "</div>" +
@@ -948,6 +958,7 @@
       case "save-walkin": saveWalkin(); break;
       case "toggle-invite": state.showInvite = !state.showInvite; state.invite.error = ""; render(); break;
       case "invite-role": state.invite.role = el.dataset.id; render(); break;
+      case "invite-kind": state.invite.withPw = el.dataset.id === "password"; state.invite.error = ""; render(); break;
       case "invite-scope": state.invite.scope = el.dataset.id; render(); break;
       case "save-invite": saveInvite(); break;
       case "toggle-in": {
@@ -1069,17 +1080,30 @@
   function saveInvite() {
     var inv = state.invite;
     if (!inv.email.trim()) { state.invite.error = "กรอกอีเมลก่อน"; render(); return; }
+    var pw = inv.withPw ? ((document.getElementById("inv-pass") || {}).value || "") : "";
+    if (inv.withPw && pw.length < 8) {
+      state.invite.error = "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว";
+      render();
+      return;
+    }
+    // The row and its password go in one call: as two, a failure between them
+    // leaves somebody on the team who cannot sign in, and an admin who was
+    // told they could.
     api("addTeamMember", {
-      email: inv.email.trim(), name: inv.name.trim(), role: inv.role, scope: inv.scope, gate: inv.gate.trim()
+      email: inv.email.trim(), name: inv.name.trim(), role: inv.role,
+      scope: inv.scope, gate: inv.gate.trim(), password: pw
     }).then(function (r) {
-      state.invite = { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "" };
+      state.invite = { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "", withPw: false };
       state.showInvite = false;
-      flash("เพิ่ม " + r.email + " เป็น " + r.role + " แล้ว");
+      flash(r.hasPassword
+        ? "เพิ่ม " + r.email + " แล้ว เข้าใช้งานได้ทันทีด้วยรหัสผ่านที่ตั้งไว้"
+        : "เพิ่ม " + r.email + " เป็น " + r.role + " แล้ว");
       loadScreen();
     }).catch(function (e) {
       var m = String(e.message || e);
       state.invite.error = m.indexOf("already_exists") >= 0 ? "อีเมลนี้อยู่ในทีมแล้ว" :
-        m.indexOf("invalid_email") >= 0 ? "รูปแบบอีเมลไม่ถูกต้อง" : m;
+        m.indexOf("invalid_email") >= 0 ? "รูปแบบอีเมลไม่ถูกต้อง" :
+        m.indexOf("password_too_short") >= 0 ? "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว" : m;
       render();
     });
   }

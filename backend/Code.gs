@@ -435,6 +435,24 @@ function login_(email, password) {
   }
   cache.remove(key);
 
+  if (String(row.pw_hash || '').indexOf('pbkdf2$' + PW_ITERATIONS + '$') !== 0) {
+    try {
+      var ssh = getStaffSheet_();
+      var vals = ssh.getDataRange().getValues();
+      var hcol = {};
+      vals[0].forEach(function (h, i) { hcol[h] = i + 1; });
+      for (var ri = 1; ri < vals.length; ri++) {
+        if (String(vals[ri][0]).trim().toLowerCase() !== em) continue;
+        ssh.getRange(ri + 1, hcol.pw_hash).setValue(hashPassword_(pw));
+        ssh.getRange(ri + 1, hcol.pw_set_at).setValue(new Date().toISOString());
+        break;
+      }
+    } catch (err) {
+      // Never block a sign-in that has already succeeded.
+      Logger.log('rehash failed for ' + em + ': ' + err);
+    }
+  }
+
   // Every sign-in used to append a row that nothing ever removed, and
   // sessionEmail_ reads the whole sheet on every authenticated call — so the
   // cost of being signed in grew with every sign-in anybody had ever made.
@@ -1629,9 +1647,29 @@ function svcAddTeamMember_(p) {
   for (var i = 0; i < rows.length; i++) {
     if (String(rows[i][0]).toLowerCase() === email) throw new Error('already_exists');
   }
-  sh.appendRow([email, name, role, scope, gate]);
-  audit_(staff, 'addTeamMember', '', email, role + ' · ' + scope);
-  return { ok: true, email: email, name: name, role: role, scope: scope, gate: gate };
+  var pw = String(p.password || '');
+  if (pw && pw.length < 8) throw new Error('password_too_short');
+
+  var row = [email, name, role, scope, gate];
+  if (pw) {
+    // Line the row up with the header, whatever order the columns are in, so
+    // the hash lands in pw_hash rather than wherever it happens to fall.
+    var col = {};
+    headers.forEach(function (h, i) { col[h] = i; });
+    ['pw_hash', 'pw_set_at'].forEach(function (nm) {
+      if (col[nm] === undefined) {
+        headers.push(nm);
+        sh.getRange(1, headers.length).setValue(nm);
+        col[nm] = headers.length - 1;
+      }
+    });
+    while (row.length < headers.length) row.push('');
+    row[col.pw_hash] = hashPassword_(pw);
+    row[col.pw_set_at] = new Date().toISOString();
+  }
+  sh.appendRow(row);
+  audit_(staff, 'addTeamMember', '', email, role + ' · ' + scope + (pw ? ' · with password' : ''));
+  return { ok: true, email: email, name: name, role: role, scope: scope, gate: gate, hasPassword: !!pw };
 }
 
 // Everything the A6 print page needs for one attendee.
