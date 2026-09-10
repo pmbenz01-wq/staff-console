@@ -1273,14 +1273,29 @@ function svcCheckin_(p) {
       };
     }
 
+    // One range write instead of eight cell writes. This was done believing it
+    // would take a chunk out of the five seconds a scan costs; measured before
+    // and after, it took none — Apps Script queues writes and flushes them at
+    // the end of the execution, so eight setValue calls were never eight round
+    // trips. Kept because it is the idiomatic form and does fewer operations,
+    // NOT because it made anything faster. The five seconds live elsewhere:
+    // about 2.5s of it is Apps Script overhead before any code runs at all,
+    // and about 1.4s is opening the per-event spreadsheet.
+    //
+    // Contiguity is checked rather than assumed. A sheet whose columns have
+    // been reordered by hand still works — it just goes back to writing them
+    // one at a time instead of writing something into the wrong column.
+    var runNames = ['checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
+    var runValues = [nowIso, staff.email, staff.gate, device, 1, nowIso, staff.email];
+    var firstCol = col[runNames[0]];
+    var contiguous = runNames.every(function (nm, i) { return col[nm] === firstCol + i; });
+
     t.sheet.getRange(rowNum, col.status).setValue('checked_in');
-    t.sheet.getRange(rowNum, col.checked_in_at).setValue(nowIso);
-    t.sheet.getRange(rowNum, col.checked_in_by).setValue(staff.email);
-    t.sheet.getRange(rowNum, col.gate).setValue(staff.gate);
-    t.sheet.getRange(rowNum, col.device_id).setValue(device);
-    t.sheet.getRange(rowNum, col.scan_count).setValue(1);
-    t.sheet.getRange(rowNum, col.updated_at).setValue(nowIso);
-    t.sheet.getRange(rowNum, col.updated_by).setValue(staff.email);
+    if (contiguous) {
+      t.sheet.getRange(rowNum, firstCol, 1, runValues.length).setValues([runValues]);
+    } else {
+      runNames.forEach(function (nm, i) { t.sheet.getRange(rowNum, col[nm]).setValue(runValues[i]); });
+    }
 
     logScan_(eventId, rec.reg_id, badgeCode, rec.full_name, staff, device, 'ok', p.clientScanId);
     return {
