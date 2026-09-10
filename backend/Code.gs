@@ -495,7 +495,41 @@ function register(p) {
   if (!lock.tryLock(15000)) throw new Error('busy');
   var regId, badgeCode, qrToken, nowIso;
   try {
-    var sh = openEventFile_(eventId).getSheetByName(SHEETS.REGISTRATIONS);
+    // One open, used for both the duplicate check and the write. It used to be
+    // opened twice in the same call, which is a round trip to Drive for nothing.
+    var file = openEventFile_(eventId);
+    var sh = file.getSheetByName(SHEETS.REGISTRATIONS);
+
+    // Read after taking the lock, or two people pressing ยืนยัน at the same
+    // moment both read "not registered" and both get a badge.
+    //
+    // A phone reaches exactly one person, because a pass is reopened by it
+    // (getMyPass) and two rows sharing a number leave the earlier one with no
+    // way back to their own QR. The same address twice is almost always the
+    // same person pressing the button twice — a refresh, a slow connection, an
+    // impatient second tap — and every such row is a badge that will never be
+    // scanned sitting in the organiser's count.
+    //
+    // Neither case hands the existing pass back here. Registration is a public
+    // endpoint; returning somebody's QR to whoever types their phone number
+    // into it would make the form a second, easier way to harvest passes. The
+    // error says to use เปิดดูบัตรของฉัน instead, and that screen is the one
+    // place that lookup lives.
+    var existing = readSheet_(SHEETS.REGISTRATIONS, file);
+    var eCol = {};
+    existing.headers.forEach(function (h, i) { eCol[h] = i; });
+    var wantTail = phoneTail_(phone);
+    for (var dx = 0; dx < existing.rows.length; dx++) {
+      var er = existing.rows[dx];
+      if (String(er[eCol.status]) === 'deleted') continue;
+      if (String(er[eCol.email] || '').trim().toLowerCase() === email) {
+        throw new Error('email_already_registered');
+      }
+      if (wantTail && phoneTail_(er[eCol.phone]) === wantTail) {
+        throw new Error('phone_already_registered');
+      }
+    }
+
     regId = 'r' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
     badgeCode = eventId.toUpperCase().slice(0, 4) + '-' + randomHex_(4) + '-' + (900 + Math.floor(Math.random() * 99));
     qrToken = signQr_(eventId, badgeCode);
