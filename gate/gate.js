@@ -707,10 +707,18 @@
 
   var audioCtx = null;          // one context for the app's whole life, not one per beep
   function sharedAudioCtx() {
-    if (audioCtx) return audioCtx;
     var C = window.AudioContext || window.webkitAudioContext;
     if (!C) return null;
-    try { audioCtx = new C(); } catch (e) { return null; }
+    if (!audioCtx) {
+      try { audioCtx = new C(); } catch (e) { return null; }
+    }
+    // The flip side of keeping one context alive: browsers suspend an idle
+    // one, and a gate goes quiet between arrivals for minutes at a time.
+    // Scheduling on a suspended context throws nothing and makes no sound,
+    // so the beep would die silently for the rest of the shift. resume()
+    // is a promise we deliberately do not await — the notes scheduled just
+    // after it play once the context is running again.
+    try { if (audioCtx.state === "suspended") audioCtx.resume(); } catch (e) {}
     return audioCtx;
   }
 
