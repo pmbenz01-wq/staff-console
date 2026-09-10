@@ -204,8 +204,9 @@ function ensureQrSecret_() {
 // Staff Console backend should call it from its own requireStaff()-style
 // check rather than re-deriving role/scope logic.
 // ---------------------------------------------------------------------------
-var TEAM_SHEETS = { STAFF: 'Staff' };
-var STAFF_HEADERS = ['email', 'name', 'role', 'event_scope', 'gate'];
+var TEAM_SHEETS = { STAFF: 'Staff', SESSIONS: 'Sessions' };
+var STAFF_HEADERS = ['email', 'name', 'role', 'event_scope', 'gate', 'pw_hash', 'pw_set_at'];
+var SESSION_HEADERS = ['token_hash', 'email', 'created_at', 'expires_at', 'revoked'];
 
 function setupTeamAccessSheet() {
   var props = PropertiesService.getScriptProperties();
@@ -219,6 +220,8 @@ function setupTeamAccessSheet() {
     props.setProperty('STAFF_SHEET_ID', ss.getId());
   }
   var sh = ensureSheet_(ss, TEAM_SHEETS.STAFF, STAFF_HEADERS);
+  migrateHeaders_(sh, STAFF_HEADERS);
+  ensureSheet_(ss, TEAM_SHEETS.SESSIONS, SESSION_HEADERS);
   seedStaff_(sh);
 
   // Drop the blank default tab Spreadsheet.create() adds, once Staff exists.
@@ -245,6 +248,185 @@ function getStaffSheet_() {
   var id = PropertiesService.getScriptProperties().getProperty('STAFF_SHEET_ID');
   if (!id) throw new Error('team_access_not_configured — run setupTeamAccessSheet() first');
   return SpreadsheetApp.openById(id).getSheetByName(TEAM_SHEETS.STAFF);
+}
+
+// ---------------------------------------------------------------------------
+// Passwords and sessions
+//
+// A password sits in a spreadsheet an admin can open, so it is never stored —
+// only PBKDF2-HMAC-SHA256 over a per-row random salt. The iteration count
+// travels inside the stored string, so it can be raised later without
+// invalidating the hashes already written.
+//
+// Signing in exchanges the password for a session token. The password itself
+// is then never sent again: every later call carries the token, which is
+// stored hashed, expires on its own, and can be revoked one row at a time
+// without touching the password.
+// ---------------------------------------------------------------------------
+var PW_ITERATIONS = 4096;
+var SESSION_HOURS = 12;
+var MAX_PW_ATTEMPTS = 8;
+var PW_LOCKOUT_SECONDS = 900;
+
+function randomBytes_(n) {
+  var out = [];
+  for (var i = 0; i < n; i++) out.push(Math.floor(Math.random() * 256) - 128);
+  return out;
+}
+
+function pbkdf2Sha256_(password, saltBytes, iterations) {
+  var pw = Utilities.newBlob(password).getBytes();
+  var block = saltBytes.concat([0, 0, 0, 1]);
+  var u = Utilities.computeHmacSha256Signature(block, pw);
+  var out = u.slice(0);
+  for (var i = 1; i < iterations; i++) {
+    u = Utilities.computeHmacSha256Signature(u, pw);
+    for (var j = 0; j < out.length; j++) out[j] = out[j] ^ u[j];
+  }
+  return out;
+}
+
+function hashPassword_(password) {
+  var salt = randomBytes_(16);
+  var dk = pbkdf2Sha256_(password, salt, PW_ITERATIONS);
+  return 'pbkdf2$' + PW_ITERATIONS + '$' + Utilities.base64Encode(salt) + '$' + Utilities.base64Encode(dk);
+}
+
+// Compares every byte whichever way it goes, so how long the check takes says
+// nothing about how much of the password was right.
+function sameBytes_(a, b) {
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= (a[i] ^ b[i]);
+  return diff === 0;
+}
+
+function verifyPassword_(password, stored) {
+  var parts = String(stored || '').split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
+  var iterations = Number(parts[1]);
+  if (!(iterations > 0)) return false;
+  var salt = Utilities.base64Decode(parts[2]);
+  var want = Utilities.base64Decode(parts[3]);
+  return sameBytes_(pbkdf2Sha256_(password, salt, iterations), want);
+}
+
+function sessionSheet_() {
+  var id = PropertiesService.getScriptProperties().getProperty('STAFF_SHEET_ID');
+  if (!id) throw new Error('team_access_not_configured');
+  var ss = SpreadsheetApp.openById(id);
+  var sh = ss.getSheetByName(TEAM_SHEETS.SESSIONS);
+  if (!sh) sh = ensureSheet_(ss, TEAM_SHEETS.SESSIONS, SESSION_HEADERS);
+  return sh;
+}
+
+function tokenHash_(token) {
+  return Utilities.base64Encode(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token)));
+}
+
+function login_(email, password) {
+  var em = String(email || '').trim().toLowerCase();
+  var pw = String(password || '');
+  if (!em || !pw) throw new Error('missing_credentials');
+
+  // Counted before the password is checked, so guessing costs the guesser
+  // whether or not the address exists.
+  var cache = CacheService.getScriptCache();
+  var key = 'pwfail:' + em;
+  var fails = Number(cache.get(key) || 0);
+  if (fails >= MAX_PW_ATTEMPTS) throw new Error('too_many_attempts');
+
+  var row = findStaffByEmail_(em);
+  var ok = !!(row && row.pw_hash) && verifyPassword_(pw, row.pw_hash);
+  if (!ok) {
+    cache.put(key, String(fails + 1), PW_LOCKOUT_SECONDS);
+    // One message for an unknown address and for a wrong password alike, or
+    // the failure itself tells an attacker which addresses are worth guessing.
+    throw new Error('invalid_credentials');
+  }
+  cache.remove(key);
+
+  var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var now = new Date();
+  var exp = new Date(now.getTime() + SESSION_HOURS * 3600 * 1000);
+  sessionSheet_().appendRow([tokenHash_(token), em, now.toISOString(), exp.toISOString(), false]);
+  return {
+    sessionToken: token,
+    exp: Math.floor(exp.getTime() / 1000),
+    me: { email: em, name: row.name || em, role: String(row.role || 'STAFF').toUpperCase() }
+  };
+}
+
+function sessionEmail_(token) {
+  if (!token) throw new Error('not_signed_in');
+  var want = tokenHash_(token);
+  var t = sessionSheet_().getDataRange().getValues();
+  var headers = t.shift();
+  var col = {};
+  headers.forEach(function (h, i) { col[h] = i; });
+  for (var i = 0; i < t.length; i++) {
+    if (String(t[i][col.token_hash]) !== want) continue;
+    if (isTrue_(t[i][col.revoked])) throw new Error('session_revoked');
+    if (new Date(t[i][col.expires_at]).getTime() < Date.now()) throw new Error('session_expired');
+    return String(t[i][col.email]).trim().toLowerCase();
+  }
+  throw new Error('invalid_session');
+}
+
+function logout_(token) {
+  if (!token) return { ok: true };
+  var sh = sessionSheet_();
+  var t = sh.getDataRange().getValues();
+  var headers = t.shift();
+  var col = {};
+  headers.forEach(function (h, i) { col[h] = i; });
+  var want = tokenHash_(token);
+  for (var i = 0; i < t.length; i++) {
+    if (String(t[i][col.token_hash]) === want) {
+      sh.getRange(i + 2, col.revoked + 1).setValue(true);
+      break;
+    }
+  }
+  return { ok: true };
+}
+
+// Setting a password is done signed in: an ADMIN may set one for anybody on
+// the team, and anybody may set their own. Nobody can set one for an address
+// that is not already on the team — the password is a second key to an
+// existing door, never a way to open a new one.
+function svcSetPassword_(p) {
+  var staff = requireStaff_(p.eventId || '', 'STAFF');
+  var target = String(p.email || staff.email).trim().toLowerCase();
+  if (target !== staff.email && staff.role !== 'ADMIN') throw new Error('forbidden_role');
+
+  var pw = String(p.password || '');
+  var clearing = p.clear === true || p.clear === 'true';
+  if (!clearing && pw.length < 8) throw new Error('password_too_short');
+
+  var sh = getStaffSheet_();
+  var rows = sh.getDataRange().getValues();
+  var headers = rows[0];
+  var col = {};
+  headers.forEach(function (h, i) { col[h] = i + 1; });
+  // The columns post-date most Team Access sheets; add them on first use
+  // rather than making setupTeamAccessSheet() a prerequisite.
+  ['pw_hash', 'pw_set_at'].forEach(function (name) {
+    if (!col[name]) {
+      headers.push(name);
+      sh.getRange(1, headers.length).setValue(name);
+      col[name] = headers.length;
+    }
+  });
+
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toLowerCase() !== target) continue;
+    sh.getRange(i + 1, col.pw_hash).setValue(clearing ? '' : hashPassword_(pw));
+    sh.getRange(i + 1, col.pw_set_at).setValue(clearing ? '' : new Date().toISOString());
+    audit_(staff, clearing ? 'clearPassword' : 'setPassword', '', '', target);
+    return { ok: true, email: target, hasPassword: !clearing };
+  }
+  throw new Error('staff_not_found');
 }
 
 // Looks up one person's role/scope from the team-access allowlist by email.
@@ -333,7 +515,13 @@ function handle_(e) {
     // currentStaff_(). svc() already returns {ok,data,error}, so this
     // short-circuits the switch below instead of re-wrapping it.
     if (action === 'staffCall') {
-      var email = verifyIdToken_(params.idToken);
+      // Two ways in, one identity out. Whichever credential arrives, what the
+      // rest of the script sees is an email that has been proven to belong to
+      // the caller — requireStaff_ and the audit log never learn which door
+      // was used, so no permission depends on it.
+      var email = params.sessionToken
+        ? sessionEmail_(params.sessionToken)
+        : verifyIdToken_(params.idToken);
       VERIFIED_EMAIL_ = email;
       try {
         return json_(svc(params.staffAction, params.payload || {}));
@@ -348,6 +536,12 @@ function handle_(e) {
       case 'getEventForm': data = getEventForm(params.eventId); break;
       case 'register': data = register(params); break;
       case 'getMyPass': data = getMyPass(params.q || params.email || params.phone); break;
+      // Public by necessity — it is the door you knock on before you have a
+      // key. Everything that protects it is inside: the stretched hash, the
+      // attempt limit, and the fact that it says the same thing whether the
+      // address is unknown or the password is wrong.
+      case 'login': data = login_(params.email, params.password); break;
+      case 'logout': data = logout_(params.sessionToken); break;
       default: return json_({ ok: false, error: 'unknown_action' });
     }
     return json_({ ok: true, data: data });
@@ -764,6 +958,7 @@ function svc(action, p) {
       case 'setEventProp': data = svcSetEventProp_(p); break;
       case 'team': data = svcTeam_(); break;
       case 'setRole': data = svcSetRole_(p); break;
+      case 'setPassword': data = svcSetPassword_(p); break;
       case 'addTeamMember': data = svcAddTeamMember_(p); break;
       case 'badgeData': data = svcBadgeData_(p); break;
       default: return { ok: false, error: 'unknown_action:' + action };
@@ -1264,7 +1459,10 @@ function teamRows_() {
   var headers = rows.shift();
   return rows.filter(function (r) { return r[0]; }).map(function (r) {
     var o = rowToObj_(headers, r);
-    return { email: o.email, name: o.name, role: String(o.role || 'STAFF').toUpperCase(), scope: o.event_scope, gate: o.gate };
+    // hasPassword, never the hash itself — the console only needs to know
+    // whether the button should read 'set' or 'change'.
+    return { email: o.email, name: o.name, role: String(o.role || 'STAFF').toUpperCase(),
+             scope: o.event_scope, gate: o.gate, hasPassword: !!o.pw_hash };
   });
 }
 

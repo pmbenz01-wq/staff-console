@@ -12,6 +12,23 @@
   // itself, not trusted from the client.
   // ---------------------------------------------------------------------
   var ID_TOKEN_KEY = "staff-id-token";
+  // A password sign-in is exchanged for a session token, kept separately from
+  // the Google one so signing out of either does not disturb the other.
+  var SESSION_KEY = "staff-session";
+
+  function saveSession(token, exp) {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) {}
+  }
+  function loadSession() {
+    try {
+      var d = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+      if (!d || !d.token || !d.exp || d.exp * 1000 < Date.now() + 30000) return null;
+      return d.token;
+    } catch (e) { return null; }
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
 
   function saveToken(token, exp) {
     try { localStorage.setItem(ID_TOKEN_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) { /* ignore */ }
@@ -43,11 +60,16 @@
 
   function callSvc(action, payload) {
     var idToken = loadToken();
-    if (idToken && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+    var session = loadSession();
+    if ((idToken || session) && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+      var body = { action: "staffCall", staffAction: action, payload: payload || {} };
+      // The session token wins when both are present: it is the one the person
+      // chose most recently, and the server treats them identically anyway.
+      if (session) body.sessionToken = session; else body.idToken = idToken;
       return fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action: "staffCall", idToken: idToken, staffAction: action, payload: payload || {} })
+        body: JSON.stringify(body)
       }).then(function (r) { return r.json(); });
     }
     // Local dev harness only (see ../../../_test/mock-staff.js) — never used
@@ -116,7 +138,9 @@
     invite: { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "" },
     newField: "",
     toast: "",
-    busy: false
+    busy: false,
+    login: { email: "", error: "", busy: false },
+    pwFor: null, pwValue: "", pwError: ""
   };
 
   var app, toastTimer = null;
@@ -158,7 +182,7 @@
   function boot() {
     app = document.getElementById("app");
     render();
-    var existing = loadToken();
+    var existing = loadToken() || loadSession();
     if (existing) { startBootstrap(); return; }
     mountSignIn();
   }
@@ -226,8 +250,70 @@
     });
   }
 
+  function passwordLogin() {
+    var em = (document.getElementById("li-email") || {}).value || "";
+    var pw = (document.getElementById("li-pass") || {}).value || "";
+    state.login.email = em;
+    if (!em.trim() || !pw) { state.login.error = "กรอกอีเมลและรหัสผ่านก่อน"; render(); return; }
+    state.login.busy = true; state.login.error = ""; render();
+    fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "login", email: em.trim(), password: pw })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      state.login.busy = false;
+      if (!res || !res.ok) {
+        // The server deliberately does not say which half was wrong, and
+        // neither does this.
+        state.login.error = res && res.error === "too_many_attempts"
+          ? "ลองผิดหลายครั้งเกินไป รอสัก 15 นาทีแล้วลองใหม่"
+          : "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
+        render();
+        return;
+      }
+      saveSession(res.data.sessionToken, res.data.exp);
+      startBootstrap();
+    }).catch(function () {
+      state.login.busy = false;
+      state.login.error = "เชื่อมต่อไม่สำเร็จ ลองใหม่อีกครั้ง";
+      render();
+    });
+  }
+
+  function savePassword(clearing) {
+    var pw = (document.getElementById("pw-value") || {}).value || "";
+    if (!clearing && pw.length < 8) { state.pwError = "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว"; render(); return; }
+    state.pwError = ""; render();
+    api("setPassword", { eventId: state.eventId, email: state.pwFor, password: pw, clear: clearing })
+      .then(function () {
+        state.pwFor = null;
+        flash(clearing ? "ลบรหัสผ่านแล้ว" : "ตั้งรหัสผ่านแล้ว");
+        render();
+      })
+      .catch(function (e) {
+        state.pwError = String((e && e.message) || e) === "password_too_short"
+          ? "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว" : "ตั้งรหัสผ่านไม่สำเร็จ";
+        render();
+      });
+  }
+
   function signOut() {
+    var session = loadSession();
+    // Revoking on the server is what stops a token somebody else copied;
+    // clearing it locally only stops this browser. logout is a public action —
+    // it takes the token itself rather than a staffCall wrapper, so revoking
+    // works even when the session is the thing that has gone wrong.
+    if (session && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+      try {
+        fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "logout", sessionToken: session })
+        });
+      } catch (e) {}
+    }
     clearToken();
+    clearSession();
     state.phase = "signin";
     state.me = null;
     render();
@@ -283,6 +369,15 @@
       '<div class="boot-rule"></div>' +
       '<div id="gis-button"></div>' +
       '<div class="muted">ใช้อีเมล Google ที่แอดมินเพิ่มไว้ในทีมเท่านั้น</div>' +
+      '<div class="signin-or"><span>หรือ</span></div>' +
+      '<div class="field"><div class="field-label">อีเมล</div>' +
+      '<input id="li-email" type="email" autocomplete="username" value="' + esc(state.login.email) + '" placeholder="name@company.com"></div>' +
+      '<div class="field"><div class="field-label">รหัสผ่าน</div>' +
+      '<input id="li-pass" type="password" autocomplete="current-password" placeholder="รหัสผ่านที่แอดมินตั้งให้"></div>' +
+      '<div class="err">' + esc(state.login.error) + "</div>" +
+      '<button class="btn-light" data-act="password-login" style="width:100%">' +
+      (state.login.busy ? "กำลังเข้าสู่ระบบ…" : "เข้าสู่ระบบด้วยรหัสผ่าน") + "</button>" +
+      '<div class="muted">รหัสผ่านตั้งได้จากหน้าทีมงาน โดยแอดมินที่ล็อกอินด้วย Google อยู่แล้ว</div>' +
       "</div></div>";
   }
 
@@ -666,6 +761,8 @@
         '<div class="cell-sub">' + esc(m.email) + "</div>" +
         '<div class="cell-mono">' + esc(m.gate || "") + "</div></div>" +
         '<button class="mini" data-act="cycle-role" data-id="' + esc(m.email) + '" data-role="' + esc(m.role) + '">' + esc(m.role) + "</button>" +
+        (can("ADMIN") ? '<button class="mini" data-act="set-pw" data-id="' + esc(m.email) + '">' +
+          (m.hasPassword ? "เปลี่ยนรหัส" : "ตั้งรหัส") + "</button>" : "") +
         '<div class="cell-sub" style="width:130px">' + esc(m.scope) + "</div></div>";
     }).join("");
 
@@ -691,7 +788,20 @@
       '<button class="btn-light" data-act="save-invite">เพิ่มเข้าทีม</button>' +
       '<div class="muted">คนนั้นต้องล็อกอินด้วยอีเมลนี้เป๊ะๆ ถึงจะเข้าได้ — แค่เพิ่มชื่อยังไม่ได้ตรวจสอบว่าอีเมลมีจริง</div></div></div>' : "";
 
+    var pwBox = state.pwFor ? '<div class="walkin">' +
+      '<div class="modal-head"><div class="modal-title">ตั้งรหัสผ่านให้ ' + esc(state.pwFor) + "</div>" +
+      '<div class="modal-close" data-act="close-pw">ปิด ✕</div></div>' +
+      '<div class="field"><div class="field-label">รหัสผ่านใหม่ (อย่างน้อย 8 ตัว)</div>' +
+      '<input id="pw-value" type="password" autocomplete="new-password" placeholder="พิมพ์รหัสผ่าน"></div>' +
+      '<div class="err">' + esc(state.pwError) + "</div>" +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+      '<button class="btn-light" data-act="save-pw">บันทึกรหัสผ่าน</button>' +
+      '<button class="mini" data-act="clear-pw">ลบรหัสผ่านของคนนี้</button>' +
+      '<div class="muted">คนนี้จะเข้าใช้งานได้ทั้งด้วยบัญชี Google เดิมและด้วยรหัสผ่านนี้ · ' +
+      'ระบบเก็บเฉพาะค่าที่ผ่านการแฮชแล้ว อ่านย้อนกลับไม่ได้ ถ้าลืมต้องตั้งใหม่</div></div></div>' : "";
+
     return '<div class="page" style="max-width:820px">' +
+      pwBox +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap">' +
       '<div><div class="page-title">ทีมงานและสิทธิ์การเข้าถึง</div>' +
       '<div class="page-sub">เจ้าหน้าที่เข้าใช้งานด้วยบัญชี Google ของตนเอง · แก้ไขรายชื่อได้ในไฟล์ Team Access</div></div>' +
@@ -782,6 +892,11 @@
     switch (a) {
       case "reload": location.reload(); break;
       case "sign-out": signOut(); break;
+      case "password-login": passwordLogin(); break;
+      case "set-pw": state.pwFor = el.dataset.id; state.pwValue = ""; state.pwError = ""; render(); break;
+      case "close-pw": state.pwFor = null; render(); break;
+      case "save-pw": savePassword(false); break;
+      case "clear-pw": savePassword(true); break;
       case "nav": go(el.dataset.id); break;
       case "pick-event":
         state.eventId = el.dataset.id;

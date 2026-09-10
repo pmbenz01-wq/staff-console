@@ -166,3 +166,10 @@ button{font-family:inherit}
        font:500 12.5px Prompt,sans-serif;pointer-events:none;max-width:88vw;text-align:center}
 
 @media (prefers-reduced-motion:reduce){.verdict{transition:none}}
+
+/* the second way in on the sign-in screen */
+.or{display:flex;align-items:center;gap:11px;margin:22px 0 14px;color:var(--faint);font:600 8.5px Prompt,sans-serif;letter-spacing:.18em}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--hair)}
+.li{width:100%;background:var(--paper);border:1px solid var(--rule);color:var(--ink);padding:13px 14px;margin-bottom:9px;font:400 15px Prompt,sans-serif;outline:none}
+.li::placeholder{color:var(--faint)}
+.li:focus{border-color:var(--ink)}

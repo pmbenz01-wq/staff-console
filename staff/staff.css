@@ -239,3 +239,9 @@ input::placeholder{color:var(--placeholder)}
   .page,.split{padding:20px}
   .split-side{width:100%}
 }
+
+/* the second way in, on the sign-in card */
+.signin-or{display:flex;align-items:center;gap:12px;margin:22px 0 4px;color:var(--muted);font:500 9px Prompt,sans-serif;letter-spacing:.16em}
+.signin-or::before,.signin-or::after{content:"";flex:1;height:1px;background:var(--line)}
+.boot-card .field{margin-top:12px;text-align:left}
+.boot-card .field input{width:100%}

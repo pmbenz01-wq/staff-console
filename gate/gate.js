@@ -8,6 +8,7 @@
   "use strict";
 
   var ID_TOKEN_KEY = "staff-id-token";     // shared shape with the console
+  var SESSION_KEY = "staff-session";        // a password sign-in, same as the console
   var EVENT_KEY = "gate-event";
   var DEVICE_KEY = "gate-device";
   var GONE_MS = 1500;                      // a badge must leave frame to count again
@@ -25,7 +26,8 @@
     attendees: [], attendeesQuery: "", attendeesBusy: false,
     manual: "",                            // survives a re-render mid-typing
     history: [], historyBusy: false,
-    busy: false, toast: "", fatal: ""
+    busy: false, toast: "", fatal: "",
+    login: { email: "", error: "", busy: false }
   };
 
   var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
@@ -51,7 +53,20 @@
   function saveToken(token, exp) {
     try { localStorage.setItem(ID_TOKEN_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) {}
   }
-  function clearToken() { try { localStorage.removeItem(ID_TOKEN_KEY); } catch (e) {} }
+  function clearToken() {
+    try { localStorage.removeItem(ID_TOKEN_KEY); } catch (e) {}
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
+  function loadSession() {
+    try {
+      var d = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+      if (!d || !d.token || !d.exp || d.exp * 1000 < Date.now() + 30000) return null;
+      return d.token;
+    } catch (e) { return null; }
+  }
+  function saveSession(token, exp) {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token: token, exp: exp })); } catch (e) {}
+  }
 
   function decodeJwtExp(jwt) {
     try {
@@ -62,11 +77,14 @@
 
   function callSvc(action, payload) {
     var idToken = loadToken();
-    if (idToken && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+    var session = loadSession();
+    if ((idToken || session) && window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) {
+      var body = { action: "staffCall", staffAction: action, payload: payload || {} };
+      if (session) body.sessionToken = session; else body.idToken = idToken;
       return fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action: "staffCall", idToken: idToken, staffAction: action, payload: payload || {} })
+        body: JSON.stringify(body)
       }).then(function (r) { return r.json(); });
     }
     // Local dev harness only, same as the console — never present in production.
@@ -189,7 +207,7 @@
         return render();
       }
     }
-    if (!loadToken() && !window.STAFF_DEV_API) {
+    if (!loadToken() && !loadSession() && !window.STAFF_DEV_API) {
       state.phase = "signin";
       render();
       loadGis();
@@ -589,6 +607,13 @@
       'ระบบจะบันทึกชื่อคุณไว้กับทุกการสแกน</div>' +
       '<div class="boot-slot" id="gis"></div>' +
       (state.fatal ? '<div class="boot-err">' + esc(state.fatal) + "</div>" : "") +
+      '<div class="or"><span>หรือ</span></div>' +
+      '<input class="li" id="li-email" type="email" autocomplete="username" ' +
+      'value="' + esc(state.login.email) + '" placeholder="อีเมล">' +
+      '<input class="li" id="li-pass" type="password" autocomplete="current-password" placeholder="รหัสผ่าน">' +
+      (state.login.error ? '<div class="boot-err">' + esc(state.login.error) + "</div>" : "") +
+      '<button class="cam-start" data-act="pwlogin" style="width:100%;margin-top:12px">' +
+      (state.login.busy ? "กำลังเข้าสู่ระบบ…" : "เข้าสู่ระบบด้วยรหัสผ่าน") + "</button>" +
       // An origin missing from the OAuth client renders a button that does
       // nothing and reports it only to the browser console. Nobody at a door
       // reads that, so the possibility is written where it will be looked for.
@@ -817,6 +842,33 @@
         if (res && res.ok) { markOnline(true); flash("เชื่อมต่อได้แล้ว"); }
         else flash("ยังเชื่อมต่อไม่ได้");
       }).catch(function () { flash("ยังเชื่อมต่อไม่ได้"); });
+    } else if (what === "pwlogin") {
+      var em = (document.getElementById("li-email") || {}).value || "";
+      var pw = (document.getElementById("li-pass") || {}).value || "";
+      state.login.email = em;
+      if (!em.trim() || !pw) { state.login.error = "กรอกอีเมลและรหัสผ่านก่อน"; render(); return; }
+      state.login.busy = true; state.login.error = ""; render();
+      fetch(window.APP_CONFIG.APPS_SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: "login", email: em.trim(), password: pw })
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        state.login.busy = false;
+        if (!res || !res.ok) {
+          state.login.error = res && res.error === "too_many_attempts"
+            ? "ลองผิดหลายครั้งเกินไป รอสัก 15 นาทีแล้วลองใหม่"
+            : "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
+          render();
+          return;
+        }
+        saveSession(res.data.sessionToken, res.data.exp);
+        state.fatal = "";
+        loadBootstrap();
+      }).catch(function () {
+        state.login.busy = false;
+        state.login.error = "เชื่อมต่อไม่สำเร็จ ลองใหม่อีกครั้ง";
+        render();
+      });
     } else if (what === "retry") {
       state.fatal = "";
       boot();
