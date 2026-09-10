@@ -290,7 +290,7 @@ function doPost(e) { return handle_(e); }
 // Both now live on the Vercel app, where the signed-in ID token is available.
 // A second door into the same app that only half works is worse than no door,
 // so what is left here is a sign pointing at the one that does.
-var CONSOLE_URL = 'https://staff-console-teal.vercel.app';
+var CONSOLE_URL = 'https://1neve-console.vercel.app';
 
 function serveMoved_(what, e) {
   var target = CONSOLE_URL;

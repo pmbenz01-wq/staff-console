@@ -146,7 +146,7 @@ sign-in attempt fails with `google_client_id_not_configured`.
    skip that list.
 3. **+ Create Credentials → OAuth client ID** → Application type **Web application**.
 4. **Authorized JavaScript origins** → add the Vercel URL this repo deploys to
-   (e.g. `https://staff-console-teal.vercel.app`). No redirect URI needed — the
+   (e.g. `https://1neve-console.vercel.app`). No redirect URI needed — the
    sign-in button flow doesn't use one.
 5. Copy the resulting Client ID (`xxxx.apps.googleusercontent.com` — not a secret,
    safe to commit in frontend code) into **two places**, exactly matching:
