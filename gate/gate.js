@@ -40,6 +40,9 @@
   // backgrounding — can put the same panel straight back up instead of
   // leaving panelPhase describing a screen that has gone blank.
   var paintedPanel = null;
+  var inFlight = null;            // the check currently being waited on
+  var LAPSE_AFTER_MS = 3000;      // when the seconds start showing
+  var CANCEL_AFTER_MS = 8000;     // past the worst honest response measured
   var decoderLoading = null;
   // Every stream this app has opened, so none can outlive the button that says
   // the camera is off, and a generation counter so a cancelled attempt cannot
@@ -460,28 +463,55 @@
     payload.device = deviceId();
     payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-    var settled = false;
-    var timer = setTimeout(function () {
-      if (settled) return;
-      settled = true;
+    var run = inFlight = { settled: false, startedAt: Date.now(), timer: null, interval: null };
+
+    function finish() {
+      run.settled = true;
+      clearTimeout(run.timer);
+      clearInterval(run.interval);
+      if (inFlight === run) inFlight = null;
       state.busy = false;
+    }
+
+    // Under normal conditions this never draws anything: the answer lands at
+    // about five seconds and the counter starts at three. It exists for the
+    // stalls — Apps Script was measured taking 38s and 48s in one session, and
+    // a still panel through that is indistinguishable from a frozen app.
+    run.interval = setInterval(function () {
+      if (run.settled || panelPhase !== "scan") return;
+      var secs = Math.floor((Date.now() - run.startedAt) / 1000);
+      if (secs * 1000 < LAPSE_AFTER_MS) return;
+      var lapse = document.getElementById("lapse");
+      if (lapse) { lapse.hidden = false; lapse.textContent = "รอมาแล้ว " + secs + " วินาที"; }
+      if (secs * 1000 >= CANCEL_AFTER_MS && !document.querySelector('[data-act="cancel"]')) {
+        var acts = document.querySelector("#verdict .act");
+        if (acts) {
+          acts.innerHTML = '<button class="ghost" data-act="cancel">ยกเลิกแล้วยิงใหม่</button>';
+          acts.querySelectorAll("[data-act]").forEach(function (b) {
+            b.addEventListener("click", function (ev) { ev.stopPropagation(); act(b.dataset.act, b); });
+          });
+        }
+      }
+    }, 500);
+
+    run.timer = setTimeout(function () {
+      if (run.settled) return;
+      finish();
       markOnline(false);
       // lastCode is left set on purpose: clearing it would make a badge still
-      // held in frame look new and re-send itself with nobody asking.
+      // held in frame look new and re-send itself with nobody asking. A cancel
+      // does the opposite, because a cancel is somebody asking for another go.
       showOfflineVerdict();
     }, SCAN_TIMEOUT_MS);
 
-
     api("checkin", payload).then(function (r) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
+      if (run.settled) return;
+      finish();
       showResult(r);
       if (state.tab === "recent") loadTab();
     }).catch(function (e) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
+      if (run.settled) return;
+      finish();
       var kind = handleFailure(e);
       if (kind === "offline") showOfflineVerdict();
       else if (kind === "server") { fail(e); }
@@ -876,6 +906,20 @@
     } else if (what === "camon") {
       startCamera();
     } else if (what === "dismiss") {
+      hideVerdict();
+    } else if (what === "cancel") {
+      // Abandons waiting, never the check-in: the request may already have
+      // reached the server. Presenting the badge again is what tells the
+      // operator what really happened — gold means the first attempt landed,
+      // green means it did not.
+      if (inFlight) {
+        inFlight.settled = true;
+        clearTimeout(inFlight.timer);
+        clearInterval(inFlight.interval);
+        inFlight = null;
+      }
+      state.busy = false;
+      lastCode = "";                 // so the same badge can be read straight away
       hideVerdict();
     } else if (what === "print") {
       window.open(printUrl(el.dataset.id), "_blank");
