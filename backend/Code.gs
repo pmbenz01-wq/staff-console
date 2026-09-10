@@ -268,9 +268,18 @@ var SESSION_HOURS = 12;
 var MAX_PW_ATTEMPTS = 8;
 var PW_LOCKOUT_SECONDS = 900;
 
+// Math.random() is not a source anybody should build a credential on.
+// Apps Script offers no CSPRNG, and getUuid() is the closest thing it has —
+// a v4 UUID carries 122 bits of randomness from the platform rather than from
+// a seeded PRNG an attacker could reason about.
 function randomBytes_(n) {
+  var hex = '';
+  while (hex.length < n * 2) hex += Utilities.getUuid().replace(/-/g, '');
   var out = [];
-  for (var i = 0; i < n; i++) out.push(Math.floor(Math.random() * 256) - 128);
+  for (var i = 0; i < n; i++) {
+    var b = parseInt(hex.substr(i * 2, 2), 16);
+    out.push(b > 127 ? b - 256 : b);   // Apps Script bytes are signed
+  }
   return out;
 }
 
