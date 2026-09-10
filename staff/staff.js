@@ -539,6 +539,11 @@
         '<div class="tag-label">' + (isIn ? "เข้างานแล้ว" : "ลงทะเบียน") + "</div></div>" +
         '<div class="cell-mono">' + esc(isIn ? (r.by || "") : "") + "</div></div>" +
         '<div class="c-actions">' +
+        // Unlike the gate app, printing here is not held behind a check-in.
+        // This is the desk: printing a stack of badges the night before an
+        // event is the normal way to work, and nobody is standing at a door
+        // waiting to be let in on the strength of it.
+        (can("STAFF") ? '<button class="mini" data-act="print-badge" data-id="' + esc(r.regId) + '">พิมพ์</button>' : "") +
         (can("STAFF") ? '<button class="mini" data-act="toggle-in" data-id="' + esc(r.regId) + '" data-on="' + (isIn ? "0" : "1") + '">' + (isIn ? "ยกเลิก" : "เช็คอิน") + "</button>" : "") +
         (can("ADMIN") ? '<button class="mini is-danger" data-act="del" data-id="' + esc(r.regId) + '" data-name="' + esc(r.name) + '">ลบ</button>' : "") +
         "</div></div>";
