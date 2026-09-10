@@ -85,7 +85,6 @@
 
   var NAV = [
     { id: "dash", label: "ภาพรวมสด" },
-    { id: "scan", label: "สแกน QR เข้างาน" },
     { id: "list", label: "ผู้ลงทะเบียน", count: true },
     { id: "history", label: "ประวัติย้อนหลัง" },
     { id: "fields", label: "ฟิลด์ฟอร์ม" },
@@ -108,9 +107,7 @@
     histFilter: "all",
     fields: [],
     team: [],
-    scanResult: null,
     sending: false,
-    recentScans: [],
     showWalkin: false,
     showNewEvent: false,
     showInvite: false,
@@ -122,14 +119,7 @@
     busy: false
   };
 
-  var app, toastTimer = null, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
-  // How long a badge must be absent before the same code counts as a new
-  // person stepping up. jsQR drops the odd frame even while a badge is held
-  // steady, so this has to be comfortably longer than a dropped frame or two.
-  var GONE_MS = 1500;
-  // Apps Script can legitimately sit on a scan for a while: svcCheckin_ waits
-  // up to 15s for the script lock before giving up.
-  var SCAN_TIMEOUT_MS = 25000;
+  var app, toastTimer = null;
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -264,7 +254,6 @@
 
   function go(screen) {
     if (screen === state.screen) return;
-    if (state.screen === "scan") stopCamera();
     state.screen = screen;
     render();
     loadScreen();
@@ -283,7 +272,6 @@
     if (state.toast) html += '<div class="toast">' + esc(state.toast) + "</div>";
     app.innerHTML = html;
     bind();
-    if (state.phase === "ready" && state.screen === "scan") mountCamera();
     if (state.phase === "signin" && window.google && window.google.accounts) renderGisButton();
   }
 
@@ -409,7 +397,6 @@
   function renderPage() {
     switch (state.screen) {
       case "dash": return renderDash();
-      case "scan": return renderScan();
       case "list": return renderList();
       case "history": return renderHistory();
       case "fields": return renderFields();
@@ -458,61 +445,6 @@
       '<div class="muted">ทุกการเช็คอินบันทึกชื่อผู้สแกน เวลา และประตู ลงแถวเดียวกันใน Google Sheet</div></div>' +
       '<div class="panel is-narrow"><div class="panel-title">กิจกรรมล่าสุด (ทุกเครื่อง)</div><div>' + feed + "</div></div>" +
       "</div></div>";
-  }
-
-  // ---------------------------------------------------------------------
-  function renderScan() {
-    var r = state.scanResult;
-    var card;
-    if (state.sending) {
-      card = '<div class="card empty">กำลังบันทึกการเช็คอิน…</div>';
-    } else if (!r) {
-      card = '<div class="card empty">ยังไม่มีการสแกนในเครื่องนี้ · เล็ง QR ของผู้เข้าร่วมเข้ากล้อง หรือพิมพ์รหัสบัตรด้านล่าง</div>';
-    } else {
-      var cls = r.result === "ok" ? "is-ok" : r.result === "duplicate" ? "is-dup" : "is-bad";
-      var status = r.result === "ok" ? "เช็คอินสำเร็จ" :
-        r.result === "duplicate" ? "สแกนซ้ำ — เข้างานไปแล้ว" :
-        r.result === "wrong_event" ? "บัตรของงานอื่น" :
-        r.result === "bad_signature" ? "QR ไม่ถูกต้อง" : "ไม่พบรหัสนี้";
-      var by = r.result === "duplicate"
-        ? "เช็คอินครั้งแรกโดย " + (r.firstBy || "—") + " · " + (r.firstAt ? new Date(r.firstAt).toLocaleString("th-TH") : "—") + (r.firstGate ? " · " + r.firstGate : "")
-        : r.result === "ok" ? "โดย " + (r.by || "") + " · " + (r.gate || "") : "";
-      card = '<div class="result-card ' + cls + '"><div style="min-width:200px;flex:1">' +
-        '<div class="result-status">' + esc(status) + "</div>" +
-        '<div class="result-name">' + esc(r.name || r.badgeCode || "—") + "</div>" +
-        '<div class="result-sub">' + esc([r.org, r.type].filter(Boolean).join(" · ")) + "</div>" +
-        '<div class="result-by">' + esc(by) + "</div>" +
-        (r.regId ? '<div style="display:flex;gap:9px;margin-top:18px">' +
-          '<button class="btn-light" data-act="print-badge" data-id="' + esc(r.regId) + '">พิมพ์บัตร A6</button></div>' : "") +
-        "</div>" +
-        (r.badgeCode ? '<div class="result-qr" id="scan-qr"></div>' : "") +
-        "</div>";
-    }
-
-    var recent = state.recentScans.length ? '<div class="card">' + state.recentScans.map(function (s) {
-      return '<div class="trow"><div class="feed-time" style="width:46px">' + esc(s.time) + "</div>" +
-        '<div class="c-grow1"><div class="cell-name">' + esc(s.name || "—") + "</div>" +
-        '<div class="cell-mono">' + esc(s.code || "") + "</div></div>" +
-        '<div class="tag' + (s.result === "ok" ? " is-in" : "") + '"><div class="tag-label">' + esc(s.result.toUpperCase()) + "</div></div></div>";
-    }).join("") + "</div>" : "";
-
-    var e = ev() || {};
-    return '<div class="scan-wrap"><div class="phone">' +
-      '<div class="side-kicker">มุมมองบนมือถือเจ้าหน้าที่</div>' +
-      '<div class="phone-body">' +
-      '<div class="phone-status"><span>' + esc(new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })) + "</span><span>SCAN</span></div>" +
-      '<div class="phone-head"><div class="phone-title">สแกน QR</div><div class="phone-gate">' + esc((state.me && state.me.gate) || "—") + "</div></div>" +
-      '<div id="cam-slot"></div>' +
-      '<div class="phone-actions">' +
-      '<div class="manual"><input id="manual-code" placeholder="พิมพ์รหัสบัตร เช่น TT-4F2A-901" autocomplete="off" />' +
-      '<button class="btn-gold" data-act="manual-checkin">เช็คอิน</button></div>' +
-      '<button class="btn-ghost" data-act="nav" data-id="list" style="padding:12px">ค้นหาด้วยชื่อแทน</button>' +
-      "</div>" +
-      '<div class="phone-foot"><div class="phone-foot-line"><span>' + esc((state.me && state.me.name) || "") + "</span>" +
-      '<span style="color:var(--accent)">' + state.recentScans.filter(function (s) { return s.result === "ok"; }).length + " สแกน</span></div>" +
-      '<div class="muted">ทุกการสแกนบันทึกชื่อเจ้าหน้าที่คนนี้ลง Google Sheet</div></div>' +
-      "</div></div>" +
-      '<div class="scan-result"><div class="side-kicker">ผลการสแกนล่าสุด</div>' + card + recent + "</div></div>";
   }
 
   // ---------------------------------------------------------------------
@@ -795,173 +727,6 @@
       "</div></div>";
   }
 
-  // ---------------------------------------------------------------------
-  // Camera
-  // ---------------------------------------------------------------------
-  function mountCamera() {
-    var slot = document.getElementById("cam-slot");
-    if (!slot) return;
-    if (!camNode) {
-      camNode = document.createElement("div");
-      camNode.className = "cam-wrap";
-      camNode.innerHTML =
-        '<video id="cam-video" playsinline muted></video><canvas id="cam-canvas" hidden></canvas>' +
-        '<div class="cam-corner tl"></div><div class="cam-corner tr"></div>' +
-        '<div class="cam-corner bl"></div><div class="cam-corner br"></div>' +
-        '<div class="cam-line"></div><div class="cam-hint" id="cam-hint">กำลังเปิดกล้อง…</div>';
-    }
-    slot.appendChild(camNode);
-    startCamera();
-  }
-
-  function startCamera() {
-    if (scanning) return;
-    var video = document.getElementById("cam-video");
-    var hint = document.getElementById("cam-hint");
-    if (!video) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      if (hint) hint.textContent = "อุปกรณ์นี้ไม่รองรับกล้อง — ใช้ช่องพิมพ์รหัสบัตรด้านล่างแทน";
-      return;
-    }
-    scanning = true;
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then(function (stream) {
-        video.srcObject = stream;
-        video.play();
-        if (hint) hint.textContent = "วาง QR ของผู้เข้าร่วมให้อยู่ในกรอบ";
-        requestAnimationFrame(tick);
-      })
-      .catch(function () {
-        scanning = false;
-        if (hint) hint.textContent = "เปิดกล้องไม่ได้ (ต้องอนุญาตสิทธิ์กล้อง) — พิมพ์รหัสบัตรด้านล่างแทนได้";
-      });
-  }
-
-  function stopCamera() {
-    scanning = false;
-    var video = camNode && camNode.querySelector("video");
-    if (video && video.srcObject) {
-      video.srcObject.getTracks().forEach(function (t) { t.stop(); });
-      video.srcObject = null;
-    }
-  }
-
-  function tick() {
-    if (!scanning) return;
-    var video = camNode && camNode.querySelector("video");
-    var canvas = camNode && camNode.querySelector("canvas");
-    if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA && window.jsQR) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      var ctx = canvas.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      try {
-        var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        var code = window.jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
-        // Same badge held in front of the lens produces a hit every frame.
-        // Submit once per presentation: the code has to actually leave the
-        // frame before it counts again. A time-based window instead meant a
-        // badge left in view re-submitted on every tick of it, writing a
-        // duplicate scan row each time.
-        var now = Date.now();
-        if (code && code.data) {
-          var fresh = code.data !== lastCode || now - lastCodeAt > GONE_MS;
-          if (!fresh) {
-            lastCodeAt = now;                     // same badge, still in frame
-          } else if (submitScan({ qr: code.data })) {
-            // Only remember it once it really went out. Recording it up front
-            // meant a badge presented while an earlier scan was still in
-            // flight got swallowed: submitScan returned on the busy guard, but
-            // the code counted as seen, so it never went again until the
-            // person pulled their badge out of frame.
-            lastCode = code.data;
-            lastCodeAt = now;
-          }
-        } else if (lastCode && now - lastCodeAt > GONE_MS) {
-          lastCode = "";                          // frame cleared, ready for the next person
-        }
-      } catch (err) { /* frame not ready */ }
-    }
-    requestAnimationFrame(tick);
-  }
-
-  // Returns true when the scan was actually sent, so the caller knows whether
-  // to count the badge as handled.
-  function submitScan(payload) {
-    if (state.busy) return false;
-    state.busy = true;
-    state.sending = true;
-    render();
-    payload.eventId = state.eventId;
-    payload.device = deviceId();
-    payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-
-    // A fetch to Apps Script can hang indefinitely when the venue's network
-    // drops mid-request. Without this the busy flag never clears and the
-    // scanner dies silently: camera still running, staff still scanning,
-    // nothing reaching the server and nothing on screen to say so.
-    var settled = false;
-    var timer = setTimeout(function () {
-      if (settled) return;
-      settled = true;
-      state.busy = false;
-      state.sending = false;
-      // lastCode is deliberately left alone. Clearing it made the still-held
-      // badge look new on the next frame and the scanner re-sent it with
-      // nobody asking — and if the original call did land, that came back as
-      // "already checked in" for someone who had just walked up.
-      render();
-      flash("ส่งไม่สำเร็จ (เครือข่ายช้าหรือหลุด) — ยกบัตรออกแล้วสแกนใหม่อีกครั้ง");
-      beep(220);
-    }, SCAN_TIMEOUT_MS);
-
-    api("checkin", payload).then(function (r) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
-      state.sending = false;
-      state.scanResult = r;
-      state.recentScans.unshift({
-        time: new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }),
-        name: r.name, code: r.badgeCode, result: r.result
-      });
-      state.recentScans = state.recentScans.slice(0, 6);
-      if (r.result === "ok") beep(880); else beep(220);
-      render();
-      drawScanQr();
-    }).catch(function (e) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
-      state.sending = false;
-      // lastCode is left set for the same reason as the timeout above: a
-      // badge still held in frame must not re-send itself.
-      render();
-      fail(e);
-    });
-    return true;
-  }
-
-  function deviceId() {
-    try {
-      var k = localStorage.getItem("staff-device");
-      if (!k) { k = "DEV-" + Math.random().toString(36).slice(2, 6).toUpperCase(); localStorage.setItem("staff-device", k); }
-      return k;
-    } catch (e) { return "WEB"; }
-  }
-
-  function beep(freq) {
-    try {
-      var Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      var ctx = new Ctx(), osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.frequency.value = freq; osc.connect(gain); gain.connect(ctx.destination);
-      gain.gain.setValueAtTime(0.08, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-      osc.start(); osc.stop(ctx.currentTime + 0.2);
-    } catch (e) { /* audio optional */ }
-  }
-
   function qrSvg(payload) {
     if (!window.qrcode) return "";
     var qr = window.qrcode(0, "M");
@@ -970,12 +735,6 @@
     var n = qr.getModuleCount(), d = "";
     for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) d += "M" + c + "," + r + "h1v1h-1Z";
     return '<svg viewBox="-2 -2 ' + (n + 4) + " " + (n + 4) + '" width="100%" height="100%" shape-rendering="crispEdges" style="display:block"><path d="' + d + '" fill="currentColor"/></svg>';
-  }
-
-  function drawScanQr() {
-    var el = document.getElementById("scan-qr");
-    var r = state.scanResult;
-    if (el && r && r.badgeCode) el.innerHTML = qrSvg(state.eventId + "|" + r.badgeCode);
   }
 
   // ---------------------------------------------------------------------
@@ -998,8 +757,6 @@
         }, 260);
       });
     }
-    var manual = document.getElementById("manual-code");
-    if (manual) manual.addEventListener("keydown", function (e) { if (e.key === "Enter") act("manual-checkin"); });
     bindInput("w-name", state.walkin, "name");
     bindInput("w-email", state.walkin, "email");
     bindInput("w-phone", state.walkin, "phone");
@@ -1014,7 +771,6 @@
 
     var bq = document.getElementById("badge-qr");
     if (bq) bq.innerHTML = qrSvg("PREVIEW|TT-4F2A-901");
-    drawScanQr();
   }
 
   function bindInput(id, obj, key) {
@@ -1028,9 +784,8 @@
       case "sign-out": signOut(); break;
       case "nav": go(el.dataset.id); break;
       case "pick-event":
-        if (state.screen === "scan") stopCamera();
         state.eventId = el.dataset.id;
-        state.scanResult = null; state.recentScans = []; state.rows = []; state.dash = null;
+        state.rows = []; state.dash = null;
         render(); loadScreen();
         break;
       case "refresh": loadScreen(); flash("อัปเดตแล้ว"); break;
@@ -1055,14 +810,6 @@
         break;
       }
       case "export": doExport(); break;
-      case "manual-checkin": {
-        var input = document.getElementById("manual-code");
-        var code = input ? input.value.trim() : "";
-        if (!code) { flash("พิมพ์รหัสบัตรก่อน"); return; }
-        if (input) input.value = "";
-        submitScan({ badgeCode: code });
-        break;
-      }
       case "toggle-walkin": state.showWalkin = !state.showWalkin; render(); break;
       case "walkin-type": state.walkin.type = el.dataset.id; render(); break;
       case "cycle-type": {
