@@ -31,6 +31,18 @@
   };
 
   var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
+  // Which of the panel's two phases is on screen, and an answer that arrived
+  // while an unacknowledged one was still up. See ADR 0020 and 0023.
+  var panelPhase = "idle";        // "idle" | "scan" | "verdict"
+  var heldVerdict = null;         // one deep, never a queue
+  // The args behind whatever is currently painted into #verdict, so a
+  // render() that just nuked app.innerHTML — network-status flips, tab
+  // backgrounding — can put the same panel straight back up instead of
+  // leaving panelPhase describing a screen that has gone blank.
+  var paintedPanel = null;
+  var inFlight = null;            // the check currently being waited on
+  var LAPSE_AFTER_MS = 3000;      // when the seconds start showing
+  var CANCEL_AFTER_MS = 8000;     // past the worst honest response measured
   var decoderLoading = null;
   // Every stream this app has opened, so none can outlive the button that says
   // the camera is off, and a generation counter so a cancelled attempt cannot
@@ -398,6 +410,15 @@
 
   function tick(gen) {
     if (!scanning || gen !== scanGen) return;
+    // Nothing is read while a check is in flight. submitScan would refuse it
+    // anyway, so running jsQR over every frame for five seconds only to throw
+    // the answer away is battery a phone working a door all day does not have
+    // to spare. The rAF loop itself keeps running: it costs nothing and means
+    // reading resumes the moment the answer lands, with no camera restart.
+    if (state.busy) {
+      raf = requestAnimationFrame(function () { tick(gen); });
+      return;
+    }
     var video = camNode && camNode.querySelector("video");
     var canvas = camNode && camNode.querySelector("canvas");
     if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA && window.jsQR) {
@@ -437,32 +458,69 @@
     if (!state.eventId) return false;
     state.busy = true;
 
+    // The receipt: up before anything is sent, so the operator can lower the
+    // phone. Deliberately colourless — at this moment the app knows only that
+    // it read a code, and a forged badge decodes as cleanly as a real one.
+    var shownCode = payload.qr ? String(payload.qr).split("|")[1] || "" : (payload.badgeCode || "");
+    showPanel("scan", "รับรหัสแล้ว", "กำลังตรวจ…", "", esc(shownCode), "", false);
+    // Fires whether or not the panel could take the screen: if an
+    // unacknowledged rejection is still up the panel was skipped, and the
+    // sound is then the only thing telling the operator the badge was read.
+    receipt();
+
     payload.eventId = state.eventId;
     payload.device = deviceId();
     payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-    var settled = false;
-    var timer = setTimeout(function () {
-      if (settled) return;
-      settled = true;
+    var run = inFlight = { settled: false, startedAt: Date.now(), timer: null, interval: null };
+
+    function finish() {
+      run.settled = true;
+      clearTimeout(run.timer);
+      clearInterval(run.interval);
+      if (inFlight === run) inFlight = null;
       state.busy = false;
+    }
+
+    // Under normal conditions this never draws anything: the answer lands at
+    // about five seconds and the counter starts at three. It exists for the
+    // stalls — Apps Script was measured taking 38s and 48s in one session, and
+    // a still panel through that is indistinguishable from a frozen app.
+    run.interval = setInterval(function () {
+      if (run.settled || panelPhase !== "scan") return;
+      var secs = Math.floor((Date.now() - run.startedAt) / 1000);
+      if (secs * 1000 < LAPSE_AFTER_MS) return;
+      var lapse = document.getElementById("lapse");
+      if (lapse) { lapse.hidden = false; lapse.textContent = "รอมาแล้ว " + secs + " วินาที"; }
+      if (secs * 1000 >= CANCEL_AFTER_MS && !document.querySelector('[data-act="cancel"]')) {
+        var acts = document.querySelector("#verdict .act");
+        if (acts) {
+          acts.innerHTML = '<button class="ghost" data-act="cancel">ยกเลิกแล้วยิงใหม่</button>';
+          acts.querySelectorAll("[data-act]").forEach(function (b) {
+            b.addEventListener("click", function (ev) { ev.stopPropagation(); act(b.dataset.act, b); });
+          });
+        }
+      }
+    }, 500);
+
+    run.timer = setTimeout(function () {
+      if (run.settled) return;
+      finish();
       markOnline(false);
       // lastCode is left set on purpose: clearing it would make a badge still
-      // held in frame look new and re-send itself with nobody asking.
+      // held in frame look new and re-send itself with nobody asking. A cancel
+      // does the opposite, because a cancel is somebody asking for another go.
       showOfflineVerdict();
     }, SCAN_TIMEOUT_MS);
 
-
     api("checkin", payload).then(function (r) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
+      if (run.settled) return;
+      finish();
       showResult(r);
       if (state.tab === "recent") loadTab();
     }).catch(function (e) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      state.busy = false;
+      if (run.settled) return;
+      finish();
       var kind = handleFailure(e);
       if (kind === "offline") showOfflineVerdict();
       else if (kind === "server") { fail(e); }
@@ -472,6 +530,7 @@
   }
 
   var MARKS = {
+    scan: '<path d="M4 9V5h4M24 9V5h-4M4 19v4h4M24 19v4h-4"/><path d="M3 14h22"/>',
     ok:   '<path d="M5 13l5 5L23 5"/>',
     dup:  '<path d="M12 6v9"/><path d="M12 20h.01"/>',
     bad:  '<path d="M6 6l16 16M22 6L6 22"/>',
@@ -485,7 +544,7 @@
       : r.result === "wrong_event" ? "บัตรของงานอื่น"
       : r.result === "bad_signature" ? "QR ไม่ถูกต้อง" : "ไม่พบรหัสนี้";
     var name = r.result === "ok" || r.result === "duplicate" ? (r.name || r.badgeCode || "—") : "ให้เข้าไม่ได้";
-    // Everything here is escaped before it goes in: paintVerdict writes meta as
+    // Everything here is escaped before it goes in: paintPanel writes meta as
     // HTML so the offline message can carry a line break, and org, type and the
     // operator's name are all values somebody typed into a form.
     var meta = "";
@@ -507,21 +566,45 @@
       acts = '<button data-act="dismiss">รับทราบ</button>';
     }
 
-    paintVerdict(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
+    showPanel(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
     beep(r.result === "ok" ? 880 : 220);
   }
 
   function showOfflineVerdict() {
-    paintVerdict("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
+    showPanel("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
       "ตรวจบัตรต้องใช้เซิร์ฟเวอร์ ระบบจึงยังยืนยันไม่ได้ว่าบัตรใบนี้ของจริง<br>" +
       "ลองใหม่เมื่อป้ายด้านบนกลับเป็นออนไลน์", "",
       '<button data-act="dismiss">รับทราบ</button>', false);
     beep(220);
   }
 
-  function paintVerdict(kind, said, name, meta, code, acts, autoClear) {
+  // Every paint goes through here. Two rules live in this one place:
+  //
+  //   A verdict the operator has not acknowledged is never painted over. The
+  //   newer answer waits — one deep, because nobody at a door wants to tap
+  //   through a backlog to reach the person in front of them.
+  //
+  //   The neutral phase is not queued, it is skipped. Holding it would mean
+  //   dismissing a rejection and being shown "กำลังตรวจ" for a check that
+  //   finished long ago.
+  function showPanel(kind, said, name, meta, code, acts, autoClear) {
+    var neutral = kind === "scan";
+    if (panelPhase === "verdict") {
+      if (neutral) return false;
+      heldVerdict = [kind, said, name, meta, code, acts, autoClear];
+      return false;
+    }
+    paintPanel(kind, said, name, meta, code, acts, autoClear);
+    return true;
+  }
+
+  function paintPanel(kind, said, name, meta, code, acts, autoClear) {
     var el = document.getElementById("verdict");
     if (!el) return;
+    panelPhase = kind === "scan" ? "scan" : "verdict";
+    paintedPanel = [kind, said, name, meta, code, acts, autoClear];
+    // The same node, recoloured. Nothing closes and reopens, so the CSS
+    // transition on background-color carries one phase into the next.
     el.className = "verdict v-" + kind + " up";
     el.innerHTML =
       '<svg class="mark" viewBox="0 0 28 28">' + (MARKS[kind] || "") + "</svg>" +
@@ -529,8 +612,9 @@
       '<div class="name">' + esc(name) + "</div>" +
       '<div class="meta">' + meta + "</div>" +
       (code ? '<div class="code">' + code + "</div>" : "") +
+      '<div class="lapse" id="lapse" hidden></div>' +
       '<div class="act">' + acts + "</div>" +
-      '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>';
+      (kind === "scan" ? "" : '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>');
     el.querySelectorAll("[data-act]").forEach(function (b) {
       b.addEventListener("click", function (ev) { ev.stopPropagation(); act(b.dataset.act, b); });
     });
@@ -547,17 +631,34 @@
     // take the colour with it at once, so the panel would blink transparent
     // while the opacity was still fading.
     if (el) el.classList.remove("up");
+    panelPhase = "idle";
+    paintedPanel = null;
+    if (heldVerdict) {
+      var h = heldVerdict;
+      heldVerdict = null;
+      paintPanel(h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+    }
   }
 
-  function beep(freq) {
+  // The read gets a sound of its own, higher and much shorter than either
+  // verdict tone, so an operator learns the difference without being told.
+  // Vibration is a bonus: Safari on iOS has no Vibration API at all, which is
+  // why the panel — not the buzz — is the signal the design leans on.
+  function receipt() {
+    beep(1320, 0.07);
+    try { if (navigator.vibrate) navigator.vibrate(35); } catch (e) {}
+  }
+
+  function beep(freq, seconds) {
+    var dur = seconds || 0.18;
     try {
       var C = window.AudioContext || window.webkitAudioContext;
       if (!C) return;
       var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
       g.gain.setValueAtTime(.06, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + .18);
-      o.start(); o.stop(ctx.currentTime + .2);
+      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + dur);
+      o.start(); o.stop(ctx.currentTime + dur + .02);
     } catch (e) { /* sound is a bonus, never the only signal */ }
   }
 
@@ -582,6 +683,17 @@
     try { if (focusId) caret = document.activeElement.selectionStart; } catch (e) {}
     app.innerHTML = html;
     bind();
+    // app.innerHTML just wiped whatever paintPanel had drawn into #verdict —
+    // that div is emitted empty by viewApp() every time. panelPhase and
+    // paintedPanel survive a render() untouched, so put the same panel back
+    // up rather than leave panelPhase claiming a screen nobody can see.
+    // Repainting after bind() (not before) matters: bind()'s own
+    // [data-act] sweep must not see the panel's buttons, or paintPanel's
+    // listeners below would stack a second one on each.
+    if (panelPhase !== "idle" && paintedPanel) {
+      paintPanel(paintedPanel[0], paintedPanel[1], paintedPanel[2], paintedPanel[3],
+                 paintedPanel[4], paintedPanel[5], paintedPanel[6]);
+    }
     if (focusId) {
       var back = document.getElementById(focusId);
       if (back && typeof back.focus === "function") {
@@ -803,6 +915,20 @@
     } else if (what === "camon") {
       startCamera();
     } else if (what === "dismiss") {
+      hideVerdict();
+    } else if (what === "cancel") {
+      // Abandons waiting, never the check-in: the request may already have
+      // reached the server. Presenting the badge again is what tells the
+      // operator what really happened — gold means the first attempt landed,
+      // green means it did not.
+      if (inFlight) {
+        inFlight.settled = true;
+        clearTimeout(inFlight.timer);
+        clearInterval(inFlight.interval);
+        inFlight = null;
+      }
+      state.busy = false;
+      lastCode = "";                 // so the same badge can be read straight away
       hideVerdict();
     } else if (what === "print") {
       window.open(printUrl(el.dataset.id), "_blank");
