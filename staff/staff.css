@@ -245,3 +245,8 @@ input::placeholder{color:var(--placeholder)}
 .signin-or::before,.signin-or::after{content:"";flex:1;height:1px;background:var(--line)}
 .boot-card .field{margin-top:12px;text-align:left}
 .boot-card .field input{width:100%}
+
+/* changing a password sits above whatever screen is open */
+.pw-veil{position:fixed;inset:0;background:rgba(30,24,12,.42);z-index:60}
+.pw-modal{position:fixed;z-index:61;top:50%;left:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:var(--surface);border:1px solid var(--line);box-shadow:0 24px 60px rgba(30,24,12,.24);padding:22px 24px;display:flex;flex-direction:column;gap:12px}
+.pw-modal .field input{width:100%}

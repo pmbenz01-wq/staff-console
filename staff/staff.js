@@ -355,10 +355,28 @@
     else if (state.phase === "loading") html = renderBoot();
     else if (state.phase === "error") html = renderFatal();
     else html = renderShell();
+    if (state.pwFor) html += renderPwBox();
     if (state.toast) html += '<div class="toast">' + esc(state.toast) + "</div>";
     app.innerHTML = html;
     bind();
     if (state.phase === "signin" && window.google && window.google.accounts) renderGisButton();
+  }
+
+  function renderPwBox() {
+    var mine = state.me && state.pwFor === state.me.email;
+    return '<div class="pw-veil" data-act="close-pw"></div>' +
+      '<div class="pw-modal">' +
+      '<div class="modal-head"><div class="modal-title">' +
+      (mine ? "เปลี่ยนรหัสผ่านของฉัน" : "ตั้งรหัสผ่านให้ " + esc(state.pwFor)) + "</div>" +
+      '<div class="modal-close" data-act="close-pw">ปิด ✕</div></div>' +
+      '<div class="field"><div class="field-label">รหัสผ่านใหม่ (อย่างน้อย 8 ตัว)</div>' +
+      '<input id="pw-value" type="password" autocomplete="new-password" placeholder="พิมพ์รหัสผ่าน"></div>' +
+      '<div class="err">' + esc(state.pwError) + "</div>" +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+      '<button class="btn-light" data-act="save-pw">บันทึกรหัสผ่าน</button>' +
+      '<button class="mini" data-act="clear-pw">' + (mine ? "ลบรหัสผ่านของฉัน" : "ลบรหัสผ่านของคนนี้") + "</button></div>" +
+      '<div class="muted">เข้าใช้งานได้ทั้งด้วยบัญชี Google เดิมและด้วยรหัสผ่านนี้ · ' +
+      'ระบบเก็บเฉพาะค่าที่ผ่านการแฮชแล้ว อ่านย้อนกลับไม่ได้ ถ้าลืมต้องตั้งใหม่</div></div>';
   }
 
   function renderSignIn() {
@@ -473,7 +491,8 @@
       '<div class="side-foot"><div class="avatar">' + esc((me.name || "?").slice(0, 1)) + "</div>" +
       '<div class="side-me"><div class="side-me-name">' + esc(me.name || "") + "</div>" +
       '<div class="side-me-role">' + esc(me.role || "") + " · " + esc(me.gate || "") + "</div></div>" +
-      '<div class="mono" data-act="sign-out" style="margin-left:auto;font-size:9.5px;color:var(--muted);cursor:pointer">ออก</div></div></div>';
+      '<div class="mono" data-act="my-pw" style="margin-left:auto;font-size:9.5px;color:var(--muted);cursor:pointer">รหัสผ่าน</div>' +
+      '<div class="mono" data-act="sign-out" style="font-size:9.5px;color:var(--muted);cursor:pointer">ออก</div></div></div>';
   }
 
   function renderTop() {
@@ -788,20 +807,7 @@
       '<button class="btn-light" data-act="save-invite">เพิ่มเข้าทีม</button>' +
       '<div class="muted">คนนั้นต้องล็อกอินด้วยอีเมลนี้เป๊ะๆ ถึงจะเข้าได้ — แค่เพิ่มชื่อยังไม่ได้ตรวจสอบว่าอีเมลมีจริง</div></div></div>' : "";
 
-    var pwBox = state.pwFor ? '<div class="walkin">' +
-      '<div class="modal-head"><div class="modal-title">ตั้งรหัสผ่านให้ ' + esc(state.pwFor) + "</div>" +
-      '<div class="modal-close" data-act="close-pw">ปิด ✕</div></div>' +
-      '<div class="field"><div class="field-label">รหัสผ่านใหม่ (อย่างน้อย 8 ตัว)</div>' +
-      '<input id="pw-value" type="password" autocomplete="new-password" placeholder="พิมพ์รหัสผ่าน"></div>' +
-      '<div class="err">' + esc(state.pwError) + "</div>" +
-      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
-      '<button class="btn-light" data-act="save-pw">บันทึกรหัสผ่าน</button>' +
-      '<button class="mini" data-act="clear-pw">ลบรหัสผ่านของคนนี้</button>' +
-      '<div class="muted">คนนี้จะเข้าใช้งานได้ทั้งด้วยบัญชี Google เดิมและด้วยรหัสผ่านนี้ · ' +
-      'ระบบเก็บเฉพาะค่าที่ผ่านการแฮชแล้ว อ่านย้อนกลับไม่ได้ ถ้าลืมต้องตั้งใหม่</div></div></div>' : "";
-
     return '<div class="page" style="max-width:820px">' +
-      pwBox +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap">' +
       '<div><div class="page-title">ทีมงานและสิทธิ์การเข้าถึง</div>' +
       '<div class="page-sub">เจ้าหน้าที่เข้าใช้งานด้วยบัญชี Google ของตนเอง · แก้ไขรายชื่อได้ในไฟล์ Team Access</div></div>' +
@@ -894,6 +900,11 @@
       case "sign-out": signOut(); break;
       case "password-login": passwordLogin(); break;
       case "set-pw": state.pwFor = el.dataset.id; state.pwValue = ""; state.pwError = ""; render(); break;
+      case "my-pw":
+        state.pwFor = state.me && state.me.email;
+        state.pwValue = ""; state.pwError = "";
+        render();
+        break;
       case "close-pw": state.pwFor = null; render(); break;
       case "save-pw": savePassword(false); break;
       case "clear-pw": savePassword(true); break;

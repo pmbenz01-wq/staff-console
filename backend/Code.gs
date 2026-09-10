@@ -356,6 +356,13 @@ function login_(email, password) {
   }
   cache.remove(key);
 
+  // Every sign-in used to append a row that nothing ever removed, and
+  // sessionEmail_ reads the whole sheet on every authenticated call — so the
+  // cost of being signed in grew with every sign-in anybody had ever made.
+  // Sweeping here keeps it bounded and costs nothing on the hot path: signing
+  // in is rare, and the sheet is open anyway.
+  pruneSessions_();
+
   var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
   var now = new Date();
   var exp = new Date(now.getTime() + SESSION_HOURS * 3600 * 1000);
@@ -365,6 +372,28 @@ function login_(email, password) {
     exp: Math.floor(exp.getTime() / 1000),
     me: { email: em, name: row.name || em, role: String(row.role || 'STAFF').toUpperCase() }
   };
+}
+
+// Drops rows that can never authenticate again — expired, or revoked. Bottom
+// up, so removing one row does not shift the index of the next one to check.
+function pruneSessions_() {
+  try {
+    var sh = sessionSheet_();
+    var values = sh.getDataRange().getValues();
+    if (values.length < 2) return;
+    var headers = values[0];
+    var col = {};
+    headers.forEach(function (h, i) { col[h] = i; });
+    var now = Date.now();
+    for (var i = values.length - 1; i >= 1; i--) {
+      var dead = isTrue_(values[i][col.revoked]) ||
+                 new Date(values[i][col.expires_at]).getTime() < now;
+      if (dead) sh.deleteRow(i + 1);
+    }
+  } catch (err) {
+    // Housekeeping must never stop somebody signing in.
+    Logger.log('pruneSessions_ failed: ' + err);
+  }
 }
 
 function sessionEmail_(token) {
