@@ -298,7 +298,7 @@ function serveMoved_(what, e) {
   if (what === 'badge') {
     var evId = (e && e.parameter && e.parameter.eventId) || '';
     var regId = (e && e.parameter && e.parameter.regId) || '';
-    target = CONSOLE_URL + '/staff/badge.html?eventId=' + encodeURIComponent(evId) +
+    target = CONSOLE_URL + '/badge.html?eventId=' + encodeURIComponent(evId) +
              '&regId=' + encodeURIComponent(regId);
     lead = 'หน้าพิมพ์บัตรย้ายที่อยู่แล้ว';
   }
