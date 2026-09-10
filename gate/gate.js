@@ -35,6 +35,11 @@
   // while an unacknowledged one was still up. See ADR 0020 and 0023.
   var panelPhase = "idle";        // "idle" | "scan" | "verdict"
   var heldVerdict = null;         // one deep, never a queue
+  // The args behind whatever is currently painted into #verdict, so a
+  // render() that just nuked app.innerHTML — network-status flips, tab
+  // backgrounding — can put the same panel straight back up instead of
+  // leaving panelPhase describing a screen that has gone blank.
+  var paintedPanel = null;
   var decoderLoading = null;
   // Every stream this app has opened, so none can outlive the button that says
   // the camera is off, and a generation counter so a cancelled attempt cannot
@@ -496,7 +501,7 @@
       : r.result === "wrong_event" ? "บัตรของงานอื่น"
       : r.result === "bad_signature" ? "QR ไม่ถูกต้อง" : "ไม่พบรหัสนี้";
     var name = r.result === "ok" || r.result === "duplicate" ? (r.name || r.badgeCode || "—") : "ให้เข้าไม่ได้";
-    // Everything here is escaped before it goes in: paintVerdict writes meta as
+    // Everything here is escaped before it goes in: paintPanel writes meta as
     // HTML so the offline message can carry a line break, and org, type and the
     // operator's name are all values somebody typed into a form.
     var meta = "";
@@ -554,6 +559,7 @@
     var el = document.getElementById("verdict");
     if (!el) return;
     panelPhase = kind === "scan" ? "scan" : "verdict";
+    paintedPanel = [kind, said, name, meta, code, acts, autoClear];
     // The same node, recoloured. Nothing closes and reopens, so the CSS
     // transition on background-color carries one phase into the next.
     el.className = "verdict v-" + kind + " up";
@@ -583,6 +589,7 @@
     // while the opacity was still fading.
     if (el) el.classList.remove("up");
     panelPhase = "idle";
+    paintedPanel = null;
     if (heldVerdict) {
       var h = heldVerdict;
       heldVerdict = null;
@@ -623,6 +630,17 @@
     try { if (focusId) caret = document.activeElement.selectionStart; } catch (e) {}
     app.innerHTML = html;
     bind();
+    // app.innerHTML just wiped whatever paintPanel had drawn into #verdict —
+    // that div is emitted empty by viewApp() every time. panelPhase and
+    // paintedPanel survive a render() untouched, so put the same panel back
+    // up rather than leave panelPhase claiming a screen nobody can see.
+    // Repainting after bind() (not before) matters: bind()'s own
+    // [data-act] sweep must not see the panel's buttons, or paintPanel's
+    // listeners below would stack a second one on each.
+    if (panelPhase !== "idle" && paintedPanel) {
+      paintPanel(paintedPanel[0], paintedPanel[1], paintedPanel[2], paintedPanel[3],
+                 paintedPanel[4], paintedPanel[5], paintedPanel[6]);
+    }
     if (focusId) {
       var back = document.getElementById(focusId);
       if (back && typeof back.focus === "function") {

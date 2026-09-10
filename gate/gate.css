@@ -83,7 +83,7 @@ button{font-family:inherit}
 
 /* ---- the verdict fills the screen ---- */
 .verdict{position:fixed;inset:0;z-index:60;opacity:0;pointer-events:none;
-         transition:opacity .14s ease;color:#fff;padding:38px 30px;
+         transition:opacity .14s ease, background-color .22s ease;color:#fff;padding:38px 30px;
          display:flex;flex-direction:column;justify-content:center}
 .verdict.up{opacity:1;pointer-events:auto}
 .verdict .mark{width:62px;height:62px;stroke:#fff;fill:none;stroke-width:2.2;
@@ -178,6 +178,5 @@ button{font-family:inherit}
    so it reads as the picture holding still rather than as a judgement — and it
    collides with none of the four verdict colours. */
 .v-scan{background:var(--well)}
-.verdict{transition:opacity .14s ease, background-color .22s ease}
 .lapse{font:500 12px Prompt,sans-serif;margin-top:12px;color:rgba(255,255,255,.62);
        font-variant-numeric:tabular-nums}
