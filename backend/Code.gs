@@ -208,6 +208,85 @@ var TEAM_SHEETS = { STAFF: 'Staff', SESSIONS: 'Sessions' };
 var STAFF_HEADERS = ['email', 'name', 'role', 'event_scope', 'gate', 'pw_hash', 'pw_set_at'];
 var SESSION_HEADERS = ['token_hash', 'email', 'created_at', 'expires_at', 'revoked'];
 
+// ---------------------------------------------------------------------------
+// TEMPORARY — a throwaway account for load testing, and nothing else.
+//
+// Run it once from the Apps Script editor, where Session.getActiveUser()
+// identifies the owner, because there is no way in from outside without a
+// credential and no way to a credential without being in. It is the only
+// bootstrap in the file and it exists to be deleted.
+//
+// Deliberately narrow: STAFF, not ADMIN, and scoped to the tt event alone. A
+// STAFF caller never receives an attendee's email or phone (svcAttendees_
+// withholds them below ADMIN), so the worst this account can do is check
+// people in and out of one test event.
+//
+// The password is written in plain sight in version control, which is exactly
+// why the account must not outlive the test. removeLoadTestAccount() deletes
+// it; delete both functions afterwards.
+// ---------------------------------------------------------------------------
+var LOADTEST_EMAIL = 'claude-loadtest@thinktech.co.th';
+var LOADTEST_PASSWORD = 'OtzsbksnBpnwvrAw6GZOZk';
+
+function createLoadTestAccount() {
+  var sh = getStaffSheet_();
+  var values = sh.getDataRange().getValues();
+  var headers = values[0];
+  var col = {};
+  headers.forEach(function (h, i) { col[h] = i + 1; });
+  ['pw_hash', 'pw_set_at'].forEach(function (name) {
+    if (!col[name]) {
+      headers.push(name);
+      sh.getRange(1, headers.length).setValue(name);
+      col[name] = headers.length;
+    }
+  });
+
+  var rowNum = -1;
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim().toLowerCase() === LOADTEST_EMAIL) { rowNum = i + 1; break; }
+  }
+  if (rowNum < 0) {
+    sh.appendRow([LOADTEST_EMAIL, 'Claude (load test)', 'STAFF', 'tt', 'ประตูทดสอบ']);
+    rowNum = sh.getLastRow();
+  }
+  sh.getRange(rowNum, col.pw_hash).setValue(hashPassword_(LOADTEST_PASSWORD));
+  sh.getRange(rowNum, col.pw_set_at).setValue(new Date().toISOString());
+  Logger.log('พร้อมแล้ว: ' + LOADTEST_EMAIL + ' (STAFF, งาน tt เท่านั้น)');
+  return 'ok';
+}
+
+function removeLoadTestAccount() {
+  var sh = getStaffSheet_();
+  var values = sh.getDataRange().getValues();
+  for (var i = values.length - 1; i >= 1; i--) {
+    if (String(values[i][0]).trim().toLowerCase() === LOADTEST_EMAIL) sh.deleteRow(i + 1);
+  }
+  // Any session it opened dies with it.
+  try {
+    var ses = sessionSheet_();
+    var rows = ses.getDataRange().getValues();
+    var col = {};
+    rows[0].forEach(function (h, i) { col[h] = i; });
+    for (var j = rows.length - 1; j >= 1; j--) {
+      if (String(rows[j][col.email]).trim().toLowerCase() === LOADTEST_EMAIL) ses.deleteRow(j + 1);
+    }
+  } catch (err) { Logger.log('session cleanup: ' + err); }
+  Logger.log('ลบบัญชีทดสอบและเซสชันของมันแล้ว');
+  return 'ok';
+}
+
+// วัดว่าการแฮชรหัสผ่านหนึ่งครั้งใช้เวลาเท่าไร เพื่อตั้งจำนวนรอบให้สูงที่สุด
+// เท่าที่การล็อกอินยังเร็วพอ
+function timePasswordHash() {
+  var t = Date.now();
+  hashPassword_('measure-me-please');
+  var ms = Date.now() - t;
+  Logger.log(PW_ITERATIONS + ' รอบ ใช้เวลา ' + ms + ' ms  ·  ถ้าอยากได้ 1 วินาที ตั้งได้ราว ' +
+             Math.round(PW_ITERATIONS * 1000 / Math.max(ms, 1)) + ' รอบ');
+  return ms;
+}
+
 function setupTeamAccessSheet() {
   var props = PropertiesService.getScriptProperties();
   var existingId = props.getProperty('STAFF_SHEET_ID');
