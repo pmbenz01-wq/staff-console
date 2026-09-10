@@ -451,6 +451,10 @@
     // it read a code, and a forged badge decodes as cleanly as a real one.
     var shownCode = payload.qr ? String(payload.qr).split("|")[1] || "" : (payload.badgeCode || "");
     showPanel("scan", "รับรหัสแล้ว", "กำลังตรวจ…", "", esc(shownCode), "", false);
+    // Fires whether or not the panel could take the screen: if an
+    // unacknowledged rejection is still up the panel was skipped, and the
+    // sound is then the only thing telling the operator the badge was read.
+    receipt();
 
     payload.eventId = state.eventId;
     payload.device = deviceId();
@@ -597,15 +601,25 @@
     }
   }
 
-  function beep(freq) {
+  // The read gets a sound of its own, higher and much shorter than either
+  // verdict tone, so an operator learns the difference without being told.
+  // Vibration is a bonus: Safari on iOS has no Vibration API at all, which is
+  // why the panel — not the buzz — is the signal the design leans on.
+  function receipt() {
+    beep(1320, 0.07);
+    try { if (navigator.vibrate) navigator.vibrate(35); } catch (e) {}
+  }
+
+  function beep(freq, seconds) {
+    var dur = seconds || 0.18;
     try {
       var C = window.AudioContext || window.webkitAudioContext;
       if (!C) return;
       var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
       g.gain.setValueAtTime(.06, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + .18);
-      o.start(); o.stop(ctx.currentTime + .2);
+      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + dur);
+      o.start(); o.stop(ctx.currentTime + dur + .02);
     } catch (e) { /* sound is a bonus, never the only signal */ }
   }
 
