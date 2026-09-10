@@ -173,3 +173,11 @@ button{font-family:inherit}
 .li{width:100%;background:var(--paper);border:1px solid var(--rule);color:var(--ink);padding:13px 14px;margin-bottom:9px;font:400 15px Prompt,sans-serif;outline:none}
 .li::placeholder{color:var(--faint)}
 .li:focus{border-color:var(--ink)}
+
+/* The panel's first phase. --well is the colour of the camera well it covers,
+   so it reads as the picture holding still rather than as a judgement — and it
+   collides with none of the four verdict colours. */
+.v-scan{background:var(--well)}
+.verdict{transition:opacity .14s ease, background-color .22s ease}
+.lapse{font:500 12px Prompt,sans-serif;margin-top:12px;color:rgba(255,255,255,.62);
+       font-variant-numeric:tabular-nums}

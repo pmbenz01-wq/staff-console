@@ -31,6 +31,10 @@
   };
 
   var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
+  // Which of the panel's two phases is on screen, and an answer that arrived
+  // while an unacknowledged one was still up. See ADR 0020 and 0023.
+  var panelPhase = "idle";        // "idle" | "scan" | "verdict"
+  var heldVerdict = null;         // one deep, never a queue
   var decoderLoading = null;
   // Every stream this app has opened, so none can outlive the button that says
   // the camera is off, and a generation counter so a cancelled attempt cannot
@@ -437,6 +441,12 @@
     if (!state.eventId) return false;
     state.busy = true;
 
+    // The receipt: up before anything is sent, so the operator can lower the
+    // phone. Deliberately colourless — at this moment the app knows only that
+    // it read a code, and a forged badge decodes as cleanly as a real one.
+    var shownCode = payload.qr ? String(payload.qr).split("|")[1] || "" : (payload.badgeCode || "");
+    showPanel("scan", "รับรหัสแล้ว", "กำลังตรวจ…", "", esc(shownCode), "", false);
+
     payload.eventId = state.eventId;
     payload.device = deviceId();
     payload.clientScanId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -472,6 +482,7 @@
   }
 
   var MARKS = {
+    scan: '<path d="M4 9V5h4M24 9V5h-4M4 19v4h4M24 19v4h-4"/><path d="M3 14h22"/>',
     ok:   '<path d="M5 13l5 5L23 5"/>',
     dup:  '<path d="M12 6v9"/><path d="M12 20h.01"/>',
     bad:  '<path d="M6 6l16 16M22 6L6 22"/>',
@@ -507,21 +518,44 @@
       acts = '<button data-act="dismiss">รับทราบ</button>';
     }
 
-    paintVerdict(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
+    showPanel(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
     beep(r.result === "ok" ? 880 : 220);
   }
 
   function showOfflineVerdict() {
-    paintVerdict("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
+    showPanel("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
       "ตรวจบัตรต้องใช้เซิร์ฟเวอร์ ระบบจึงยังยืนยันไม่ได้ว่าบัตรใบนี้ของจริง<br>" +
       "ลองใหม่เมื่อป้ายด้านบนกลับเป็นออนไลน์", "",
       '<button data-act="dismiss">รับทราบ</button>', false);
     beep(220);
   }
 
-  function paintVerdict(kind, said, name, meta, code, acts, autoClear) {
+  // Every paint goes through here. Two rules live in this one place:
+  //
+  //   A verdict the operator has not acknowledged is never painted over. The
+  //   newer answer waits — one deep, because nobody at a door wants to tap
+  //   through a backlog to reach the person in front of them.
+  //
+  //   The neutral phase is not queued, it is skipped. Holding it would mean
+  //   dismissing a rejection and being shown "กำลังตรวจ" for a check that
+  //   finished long ago.
+  function showPanel(kind, said, name, meta, code, acts, autoClear) {
+    var neutral = kind === "scan";
+    if (panelPhase === "verdict") {
+      if (neutral) return false;
+      heldVerdict = [kind, said, name, meta, code, acts, autoClear];
+      return false;
+    }
+    paintPanel(kind, said, name, meta, code, acts, autoClear);
+    return true;
+  }
+
+  function paintPanel(kind, said, name, meta, code, acts, autoClear) {
     var el = document.getElementById("verdict");
     if (!el) return;
+    panelPhase = kind === "scan" ? "scan" : "verdict";
+    // The same node, recoloured. Nothing closes and reopens, so the CSS
+    // transition on background-color carries one phase into the next.
     el.className = "verdict v-" + kind + " up";
     el.innerHTML =
       '<svg class="mark" viewBox="0 0 28 28">' + (MARKS[kind] || "") + "</svg>" +
@@ -529,8 +563,9 @@
       '<div class="name">' + esc(name) + "</div>" +
       '<div class="meta">' + meta + "</div>" +
       (code ? '<div class="code">' + code + "</div>" : "") +
+      '<div class="lapse" id="lapse" hidden></div>' +
       '<div class="act">' + acts + "</div>" +
-      '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>';
+      (kind === "scan" ? "" : '<div class="tap">แตะที่ใดก็ได้เพื่อปิด</div>');
     el.querySelectorAll("[data-act]").forEach(function (b) {
       b.addEventListener("click", function (ev) { ev.stopPropagation(); act(b.dataset.act, b); });
     });
@@ -547,6 +582,12 @@
     // take the colour with it at once, so the panel would blink transparent
     // while the opacity was still fading.
     if (el) el.classList.remove("up");
+    panelPhase = "idle";
+    if (heldVerdict) {
+      var h = heldVerdict;
+      heldVerdict = null;
+      paintPanel(h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+    }
   }
 
   function beep(freq) {
