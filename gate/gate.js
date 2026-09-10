@@ -30,6 +30,10 @@
 
   var app, camNode = null, scanning = false, lastCode = "", lastCodeAt = 0;
   var decoderLoading = null;
+  // Every stream this app has opened, so none can outlive the button that says
+  // the camera is off, and a generation counter so a cancelled attempt cannot
+  // come back and attach itself later.
+  var camStreams = [], scanGen = 0;
   var raf = null, toastTimer = null, verdictTimer = null, probeTimer = null;
 
   // ---------------------------------------------------------------------
@@ -311,48 +315,71 @@
     return decoderLoading;
   }
 
+  function releaseStreams() {
+    camStreams.forEach(function (s) {
+      s.getTracks().forEach(function (t) { t.stop(); });
+    });
+    camStreams.length = 0;
+  }
+
   function startCamera() {
     if (scanning) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       state.camera = "unsupported"; render(); return;
     }
     scanning = true;
+    var gen = ++scanGen;
     state.camera = "on";
     render();
     // The decoder has to be here before the camera is, or the operator gets a
     // live picture that silently never reads anything.
     ensureDecoder().then(function () {
+      // Stopped while the decoder was still downloading. Do not open the camera
+      // at all: opening it only to close it again lights the phone's camera
+      // indicator for no reason.
+      if (!scanning || gen !== scanGen) throw new Error("cancelled");
       return navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
     }).then(function (stream) {
-      if (!scanning) {                       // they left the tab while it loaded
+      // This attempt is no longer the current one — someone pressed home, or
+      // tapped the button again and a newer open won. The stream still arrived,
+      // and if it is not stopped right here nothing else ever will: it is
+      // attached to no video element, so stopCamera cannot find it, and the
+      // phone keeps the camera running behind a button that says it is off.
+      if (!scanning || gen !== scanGen) {
         stream.getTracks().forEach(function (t) { t.stop(); });
         return;
       }
       var video = camNode && camNode.querySelector("video");
-      if (!video) return;
+      if (!video) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
+      releaseStreams();                      // anything an earlier attempt left open
+      camStreams.push(stream);
       video.srcObject = stream;
       video.play();
-      requestAnimationFrame(tick);
+      raf = requestAnimationFrame(function () { tick(gen); });
     }).catch(function (e) {
+      var m = String((e && e.message) || e);
+      if (m === "cancelled") return;         // stopCamera has already set the screen right
       scanning = false;
-      state.camera = String((e && e.message) || e) === "decoder_failed" ? "noreader" : "denied";
+      state.camera = m === "decoder_failed" ? "noreader" : "denied";
       render();
     });
   }
 
   function stopCamera() {
     scanning = false;
+    scanGen++;                               // orphans every pending open and every tick loop
     if (raf) { cancelAnimationFrame(raf); raf = null; }
+    releaseStreams();
     var video = camNode && camNode.querySelector("video");
-    if (video && video.srcObject) {
-      video.srcObject.getTracks().forEach(function (t) { t.stop(); });
-      video.srcObject = null;
-    }
+    if (video) video.srcObject = null;
     if (state.camera === "on") state.camera = "off";
   }
 
-  function tick() {
-    if (!scanning) return;
+  function tick(gen) {
+    if (!scanning || gen !== scanGen) return;
     var video = camNode && camNode.querySelector("video");
     var canvas = camNode && camNode.querySelector("canvas");
     if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA && window.jsQR) {
@@ -379,7 +406,7 @@
         }
       } catch (err) { /* frame not ready */ }
     }
-    raf = requestAnimationFrame(tick);
+    raf = requestAnimationFrame(function () { tick(gen); });
   }
 
   // ---------------------------------------------------------------------
