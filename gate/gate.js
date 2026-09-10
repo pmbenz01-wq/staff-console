@@ -155,10 +155,27 @@
     stopProbe();
     stopCamera();
     clearToken();
+    clearPanelState();
     state.phase = "signin";
     state.fatal = "เซสชันหมดอายุ — ลงชื่อเข้าใช้อีกครั้ง";
     render();
     loadGis();
+  }
+
+  // toSignIn() and the fatal/error branch of loadBootstrap's catch both take
+  // #verdict out of the DOM by switching state.phase away from "ready" —
+  // but panelPhase and paintedPanel are module state that a phase switch
+  // does not touch. Left alone, the next render() that emits a fresh
+  // #verdict (signing back in) repaints whatever was up when the token
+  // expired — often the neutral "กำลังตรวจ…" receipt, with autoClear false
+  // and no run behind it — as a phantom panel over the reloaded app that
+  // never leaves until tapped. Call this on every path that leaves "ready"
+  // this way so there is nothing left for that repaint to find.
+  function clearPanelState() {
+    clearTimeout(verdictTimer);
+    panelPhase = "idle";
+    paintedPanel = null;
+    heldVerdict = null;
   }
 
   // Everything that can fail a call routes through here so each cause gets the
@@ -243,6 +260,7 @@
       if (state.eventId) loadTab();
     }).catch(function (e) {
       var m = String((e && e.message) || e);
+      clearPanelState();
       if (m.indexOf("invalid_id_token") >= 0 || m.indexOf("not_signed_in") >= 0) {
         clearToken();
         state.phase = "signin";
@@ -454,7 +472,18 @@
   // Returns true when the scan was actually sent.
   function submitScan(payload) {
     if (state.busy) return false;
-    if (!state.online) { showOfflineVerdict(); return false; }
+    if (!state.online) {
+      showOfflineVerdict();
+      // Nothing was sent, so tick() never gets to the branch that marks this
+      // code seen — the badge stays "fresh" on every subsequent frame and
+      // this whole path, beep and AudioContext and all, reruns at frame rate
+      // for as long as the badge and the outage both last. Mark it seen here
+      // instead, exactly as a successful submit would, so the same
+      // held-badge accounting used everywhere else takes over.
+      lastCode = payload.qr || payload.badgeCode || "";
+      lastCodeAt = Date.now();
+      return false;
+    }
     if (!state.eventId) return false;
     state.busy = true;
 
@@ -480,6 +509,15 @@
       clearInterval(run.interval);
       if (inFlight === run) inFlight = null;
       state.busy = false;
+      // Decoding resumes the instant busy drops, and GONE_MS has to measure
+      // from here — not from whenever this badge was first read. tick()
+      // skipped every frame for the ~5s the check was in flight, so lastCodeAt
+      // is that old and, left alone, the very next frame would compute
+      // now - lastCodeAt as roughly the whole wait, decide the still-held
+      // badge is "fresh", and submit it again. Bumping it to now makes the
+      // next frame see a badge that has been held continuously, same as the
+      // ordinary !fresh path does every frame decoding is actually running.
+      lastCodeAt = Date.now();
     }
 
     // Under normal conditions this never draws anything: the answer lands at
@@ -566,32 +604,49 @@
       acts = '<button data-act="dismiss">รับทราบ</button>';
     }
 
-    showPanel(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok");
-    beep(r.result === "ok" ? 880 : 220);
+    var tone = r.result === "ok" ? 880 : 220;
+    // showPanel says whether this painted now or is waiting behind an
+    // unacknowledged rejection. Only a painted panel gets its tone right
+    // here — a held one gets it from hideVerdict() when it is finally shown,
+    // so the sound the operator hears always describes the panel on screen.
+    if (showPanel(kind, said, name, meta, r.badgeCode ? esc(r.badgeCode) : "", acts, r.result === "ok", tone)) {
+      beep(tone);
+    }
   }
 
   function showOfflineVerdict() {
-    showPanel("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
-      "ตรวจบัตรต้องใช้เซิร์ฟเวอร์ ระบบจึงยังยืนยันไม่ได้ว่าบัตรใบนี้ของจริง<br>" +
-      "ลองใหม่เมื่อป้ายด้านบนกลับเป็นออนไลน์", "",
-      '<button data-act="dismiss">รับทราบ</button>', false);
-    beep(220);
+    if (showPanel("wait", "ยังเช็คอินไม่ได้", "รอเครือข่าย",
+        "ตรวจบัตรต้องใช้เซิร์ฟเวอร์ ระบบจึงยังยืนยันไม่ได้ว่าบัตรใบนี้ของจริง<br>" +
+        "ลองใหม่เมื่อป้ายด้านบนกลับเป็นออนไลน์", "",
+        '<button data-act="dismiss">รับทราบ</button>', false, 220)) {
+      beep(220);
+    }
   }
 
-  // Every paint goes through here. Two rules live in this one place:
+  // The gate every NEW panel goes through — the receipt in submitScan, a
+  // verdict from showResult, the offline verdict — so its two rules live in
+  // one place:
   //
   //   A verdict the operator has not acknowledged is never painted over. The
   //   newer answer waits — one deep, because nobody at a door wants to tap
-  //   through a backlog to reach the person in front of them.
+  //   through a backlog to reach the person in front of them. Its tone (see
+  //   `tone`) waits with it, and plays from hideVerdict() when it finally
+  //   goes up.
   //
   //   The neutral phase is not queued, it is skipped. Holding it would mean
   //   dismissing a rejection and being shown "กำลังตรวจ" for a check that
   //   finished long ago.
-  function showPanel(kind, said, name, meta, code, acts, autoClear) {
+  //
+  // Not every paint goes through here, only new ones: render() repaints
+  // whatever was already on screen straight from paintedPanel after
+  // app.innerHTML wiped the node, and hideVerdict() paints a held verdict
+  // that already passed this gate once when it was queued. Both call
+  // paintPanel directly, on purpose, to skip re-applying these rules.
+  function showPanel(kind, said, name, meta, code, acts, autoClear, tone) {
     var neutral = kind === "scan";
     if (panelPhase === "verdict") {
       if (neutral) return false;
-      heldVerdict = [kind, said, name, meta, code, acts, autoClear];
+      heldVerdict = [kind, said, name, meta, code, acts, autoClear, tone];
       return false;
     }
     paintPanel(kind, said, name, meta, code, acts, autoClear);
@@ -637,6 +692,7 @@
       var h = heldVerdict;
       heldVerdict = null;
       paintPanel(h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+      if (h[7]) beep(h[7]);              // the tone that belongs to this panel, not the one before it
     }
   }
 
@@ -649,12 +705,35 @@
     try { if (navigator.vibrate) navigator.vibrate(35); } catch (e) {}
   }
 
+  var audioCtx = null;          // one context for the app's whole life, not one per beep
+  function sharedAudioCtx() {
+    var C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return null;
+    if (!audioCtx) {
+      try { audioCtx = new C(); } catch (e) { return null; }
+    }
+    // The flip side of keeping one context alive: browsers suspend an idle
+    // one, and a gate goes quiet between arrivals for minutes at a time.
+    // Scheduling on a suspended context throws nothing and makes no sound,
+    // so the beep would die silently for the rest of the shift. resume()
+    // is a promise we deliberately do not await — the notes scheduled just
+    // after it play once the context is running again.
+    try { if (audioCtx.state === "suspended") audioCtx.resume(); } catch (e) {}
+    return audioCtx;
+  }
+
   function beep(freq, seconds) {
     var dur = seconds || 0.18;
     try {
-      var C = window.AudioContext || window.webkitAudioContext;
-      if (!C) return;
-      var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+      // This feature doubled the beep rate (receipt plus verdict, per scan).
+      // A fresh AudioContext per call used to leak one every time and never
+      // close it; Chrome caps concurrent contexts at 6 per document, so a
+      // few scans in, the constructor starts throwing — straight into this
+      // catch, silently. Reusing one context means an event that runs all
+      // day keeps making sound instead of going quiet after three scans.
+      var ctx = sharedAudioCtx();
+      if (!ctx) return;
+      var o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
       g.gain.setValueAtTime(.06, ctx.currentTime);
       g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + dur);
@@ -887,6 +966,15 @@
     });
     var v = document.getElementById("verdict");
     if (v) v.addEventListener("click", function (e) {
+      // The neutral phase ends exactly three ways: the answer replaces it,
+      // the lapse timer's cancel button ends it, or the deadline does. A
+      // background tap is not one of them — it carries no "แตะที่ใดก็ได้"
+      // hint for exactly this reason, but an operator trained by the four
+      // verdict panels will tap it anyway. Letting that through would call
+      // hideVerdict() mid-flight and blank panelPhase back to "idle" while
+      // the check is still running, silencing the lapse counter and the 8s
+      // cancel button for the rest of that wait.
+      if (panelPhase === "scan") return;
       if (!e.target.closest("[data-act]")) hideVerdict();
     });
     var q = document.getElementById("q");
