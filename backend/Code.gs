@@ -347,7 +347,7 @@ function handle_(e) {
       case 'listEvents': data = listEvents(); break;
       case 'getEventForm': data = getEventForm(params.eventId); break;
       case 'register': data = register(params); break;
-      case 'getMyPass': data = getMyPass(params.email); break;
+      case 'getMyPass': data = getMyPass(params.q || params.email || params.phone); break;
       default: return json_({ ok: false, error: 'unknown_action' });
     }
     return json_({ ok: true, data: data });
@@ -455,11 +455,13 @@ function register(p) {
 
   if (!eventId) throw new Error('missing_event');
 
-  // Name and email are required whatever the Fields sheet says: the QR is
-  // delivered by email (sendPassEmail_) and a returning attendee finds their
-  // pass by it (getMyPass), and the badge has to print a name. Everything
-  // else — phone included — is required only if staff ticked it, so the form
-  // the customer sees and the rules the server enforces cannot disagree.
+  // Name and email stay required whatever the Fields sheet says: a returning
+  // attendee finds their pass by phone or email (getMyPass), the organiser
+  // needs a way to reach someone, and the badge has to print a name.
+  // Everything else — phone included — is required only if staff ticked it, so
+  // the form the customer sees and the rules the server enforces cannot
+  // disagree. Note that an event whose Fields sheet leaves phone un-ticked
+  // leaves its guests only the email route back to their pass.
   if (!name) throw new Error('invalid_name');
   if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('invalid_email');
 
@@ -521,8 +523,6 @@ function register(p) {
     lock.releaseLock();
   }
 
-  sendPassEmail_(email, name, ev, badgeCode);
-
   return {
     regId: regId, badgeCode: badgeCode,
     qrPayload: eventId + '|' + badgeCode + '|' + qrToken,
@@ -570,43 +570,45 @@ function eventById_(id) {
   return row ? rowToObj_(t.headers, row) : null;
 }
 
-// Where the customer site lives. This used to come from a CUSTOMER_SITE_URL
-// script property, which meant the address printed into every attendee's
-// email was held somewhere nobody could see without opening the Apps Script
-// settings — and when the site was renamed, no one could tell whether the
-// property still matched. There is one customer site; its address belongs in
-// version control where a rename is a visible one-line change.
-var CUSTOMER_SITE_URL = 'https://1neve.vercel.app';
+// No pass email is sent. A consumer Google account can send about a hundred
+// a day, which one full event exhausts, and the failure was invisible: the
+// send sat inside a try/catch (correctly — a mail hiccup must not fail a
+// registration), so the customer saw "เรียบร้อยแล้ว" either way and nobody
+// learned that the hundred-and-first guest got nothing. Rather than a channel
+// that works until it quietly doesn't, the QR is shown on screen the moment
+// registration finishes and can be reopened at any time from the site by
+// typing the phone number or email that was registered — see getMyPass.
 
-// Best-effort — a mail quota hiccup shouldn't fail the registration itself.
-function sendPassEmail_(email, name, ev, badgeCode) {
-  try {
-    var siteUrl = CUSTOMER_SITE_URL;
-    var link = siteUrl ? (siteUrl + (siteUrl.indexOf('?') >= 0 ? '&' : '?') + 'lookup=' + encodeURIComponent(email)) : '';
-    var subject = '[' + ev.name + '] บัตรเข้างานของคุณ / Your entry pass';
-    var body = 'สวัสดีคุณ ' + name + ',\n\n' +
-      'ลงทะเบียนเข้างาน "' + ev.name + '" สำเร็จแล้ว\n' +
-      'รหัสบัตร: ' + badgeCode + '\n\n' +
-      (link ? ('เปิดดู QR เข้างานได้ที่ลิงก์นี้ / Reopen your QR pass:\n' + link + '\n\n') : '') +
-      '— ทีมผู้จัดงาน';
-    MailApp.sendEmail(email, subject, body);
-  } catch (err) {
-    Logger.log('sendPassEmail_ failed: ' + err);
-  }
+// ---------------------------------------------------------------------------
+// getMyPass — public. Reopens a badge across all events for a customer who
+// closed the page, by whichever of their phone number or email they still
+// remember. Returns the most recently registered match.
+//
+// Phones are compared on their last nine digits. A Thai mobile is ten digits
+// beginning with a zero, and rows written before the phone column was forced
+// to text are stored as numbers with that zero gone — comparing the tail
+// matches both without having to guess which kind a row is.
+// ---------------------------------------------------------------------------
+function phoneTail_(v) {
+  var d = String(v == null ? '' : v).replace(/\D/g, '');
+  return d.length >= 9 ? d.slice(-9) : '';
 }
 
-// ---------------------------------------------------------------------------
-// getMyPass — public. Reopens a badge by email, across all events, so a
-// customer who lost their pass image can pull it back up. Returns the most
-// recently registered match.
-// ---------------------------------------------------------------------------
-function getMyPass(email) {
-  var em = String(email || '').trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(em)) throw new Error('invalid_email');
+function getMyPass(term) {
+  var q = String(term || '').trim();
+  var em = q.toLowerCase();
+  var isEmail = /^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$/.test(em);
+  var tail = phoneTail_(q);
+  // Anything shorter than a whole phone number is not a lookup, it is a guess.
+  if (!isEmail && !tail) throw new Error('invalid_lookup');
 
   var t = readSheet_(SHEETS.ALL_REG);
   var matches = t.rows.map(function (r) { return rowToObj_(t.headers, r); })
-    .filter(function (o) { return o.email && String(o.email).toLowerCase() === em && o.status !== 'deleted'; });
+    .filter(function (o) {
+      return isEmail
+        ? (o.email && String(o.email).toLowerCase() === em)
+        : (tail && phoneTail_(o.phone) === tail);
+    }).filter(function (o) { return o.status !== 'deleted'; });
   if (!matches.length) throw new Error('not_found');
 
   matches.sort(function (a, b) { return new Date(b.registered_at) - new Date(a.registered_at); });
