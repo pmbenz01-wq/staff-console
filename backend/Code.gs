@@ -49,7 +49,7 @@ var SHEETS = {
 // un-hide it) via allEventsRows_() in svcBootstrap_.
 // image_url: a public https image for the customer picker card / form banner
 // (falls back to the striped placeholder client-side when blank).
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa'];
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -400,7 +400,11 @@ function allEventsRows_() {
       id: o.event_id, name: o.name, date: o.date_display, place: o.place,
       status: o.status_label, seats: o.seats_label, price: o.price_label,
       accent: o.accent, theme: o.theme, open: isTrue_(o.open), short: o.short_label,
-      hidden: isTrue_(o.hidden), image: o.image_url || '', pdpa: isTrue_(o.pdpa)
+      hidden: isTrue_(o.hidden), image: o.image_url || '', pdpa: isTrue_(o.pdpa),
+      // Free text, not a time value: "08:15", "เปิดประตู 08:15 น." and
+      // "gates 8am" all print fine on a pass. Blank means the pass leaves the
+      // line out rather than inventing a time.
+      doors: o.doors_at || ''
     };
   });
 }
@@ -500,13 +504,16 @@ function register(p) {
       (wantsConsent && consent) ? nowIso : '', '', '', '', '', 0, nowIso, 'customer'
     ];
     sh.appendRow(row);
+    forcePhoneText_(sh, phone);
     // Mirror into the Overview file's AllRegistrations tab, under the SAME
     // lock — this shared tab is where concurrent appends across different
     // events converge, and appendRow isn't safe against concurrent callers.
     // Best-effort: a mirror failure must not fail a registration that
     // already succeeded above (see getMyPass()'s known limitation on a miss).
     try {
-      SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG).appendRow(row);
+      var mirror = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG);
+      mirror.appendRow(row);
+      forcePhoneText_(mirror, phone);
     } catch (mirrorErr) {
       Logger.log('AllRegistrations mirror failed for ' + regId + ': ' + mirrorErr);
     }
@@ -520,7 +527,9 @@ function register(p) {
     regId: regId, badgeCode: badgeCode,
     qrPayload: eventId + '|' + badgeCode + '|' + qrToken,
     name: name, email: email, phone: phone, org: org, type: type,
-    eventId: eventId, eventName: ev.name
+    eventId: eventId, eventName: ev.name,
+    eventDate: ev.date_display || '', eventPlace: ev.place || '',
+    eventDoors: ev.doors_at || ''
   };
 }
 
@@ -540,6 +549,19 @@ function signQr_(eventId, badgeCode) {
   var sigBytes = Utilities.computeHmacSha256Signature(raw, secret);
   var hex = sigBytes.map(function (b) { return ((b < 0 ? b + 256 : b).toString(16)).padStart(2, '0'); }).join('');
   return hex.slice(0, 10).toUpperCase();
+}
+
+// appendRow lets the sheet guess the type of every cell, and for a phone
+// number it guesses wrong. The cell is re-set as plain text right after the
+// row lands, while the write lock is still held.
+function forcePhoneText_(sh, phone) {
+  try {
+    var col = REG_HEADERS.indexOf('phone') + 1;
+    if (!col || !phone) return;
+    sh.getRange(sh.getLastRow(), col).setNumberFormat('@').setValue(String(phone));
+  } catch (err) {
+    Logger.log('forcePhoneText_ failed: ' + err);
+  }
 }
 
 function eventById_(id) {
@@ -594,7 +616,9 @@ function getMyPass(email) {
     regId: o.reg_id, badgeCode: o.badge_code,
     qrPayload: o.event_id + '|' + o.badge_code + '|' + o.qr_token,
     name: o.full_name, email: o.email, phone: o.phone, org: o.org, type: o.type,
-    eventId: o.event_id, eventName: ev ? ev.name : o.event_id
+    eventId: o.event_id, eventName: ev ? ev.name : o.event_id,
+    eventDate: ev ? (ev.date_display || '') : '', eventPlace: ev ? (ev.place || '') : '',
+    eventDoors: ev ? (ev.doors_at || '') : ''
   };
 }
 
@@ -1009,10 +1033,13 @@ function svcAddWalkin_(p) {
       nowIso, nowIso, nowIso, staff.email, staff.gate, 'MANUAL', 1, nowIso, staff.email
     ];
     sh.appendRow(row);
+    forcePhoneText_(sh, phone);
     // Walk-ins are a form of registration too — mirror them the same as
     // register(), same lock, same best-effort try/catch.
     try {
-      SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG).appendRow(row);
+      var walkinMirror = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.ALL_REG);
+      walkinMirror.appendRow(row);
+      forcePhoneText_(walkinMirror, phone);
     } catch (mirrorErr) {
       Logger.log('AllRegistrations mirror failed for ' + regId + ': ' + mirrorErr);
     }
@@ -1171,6 +1198,16 @@ function svcSetEventProp_(p) {
         col.pdpa = t.headers.length + 1;
       }
       sh.getRange(i + 2, col.pdpa).setValue(p.pdpa === true || p.pdpa === 'true');
+    }
+    if (p.doors !== undefined) {
+      // Same lazy add as pdpa: the column post-dates existing sheets, and a
+      // switch that needs setupSheets() run first is a switch that looks broken.
+      if (!col.doors_at) {
+        sh.getRange(1, t.headers.length + 1).setValue('doors_at');
+        col.doors_at = t.headers.length + 1;
+        t.headers.push('doors_at');
+      }
+      sh.getRange(i + 2, col.doors_at).setValue(String(p.doors || ''));
     }
     if (p.image !== undefined) sh.getRange(i + 2, col.image_url).setValue(String(p.image || ''));
     if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
