@@ -1669,6 +1669,24 @@ function ensureEventCol_(sh, t, col, name) {
   return idx;
 }
 
+// Run by hand from the Apps Script editor. Creates one tiny public image and
+// logs both candidate hotlink forms so they can be opened from a signed-out
+// browser. The whole banner feature depends on one of these working; nothing
+// in the codebase had ever tested it.
+function probeDriveHotlink() {
+  // A 1x1 red PNG — smallest thing that still proves an image decoded.
+  var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  var blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/png', 'hotlink-probe.png');
+  var file = DriveApp.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var id = file.getId();
+  Logger.log('fileId: ' + id);
+  Logger.log('form 1 (lh3): https://lh3.googleusercontent.com/d/' + id);
+  Logger.log('form 2 (thumbnail): https://drive.google.com/thumbnail?id=' + id + '&sz=w1600');
+  Logger.log('delete when done: DriveApp.getFileById("' + id + '").setTrashed(true)');
+  return id;
+}
+
 function svcSetEventProp_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
