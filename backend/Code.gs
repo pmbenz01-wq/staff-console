@@ -1467,7 +1467,6 @@ function svcAddWalkin_(p) {
 // forgotten must not still open a door.
 function svcDeleteAttendee_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
-  var nowIso = new Date().toISOString();
   var wipe = ['full_name', 'email', 'phone', 'org', 'answers_json', 'badge_code', 'qr_token'];
 
   // Under the same script lock register() takes, because this clears the very
@@ -1476,7 +1475,14 @@ function svcDeleteAttendee_(p) {
   if (!lock.tryLock(15000)) throw new Error('busy');
 
   var found = false;
+  var mirrorFound = false;
+  var mirrorFailed = false;
   try {
+    // register() computes its stamp inside the try, after the lock is held,
+    // so the value written is the time of the write, not the time this call
+    // happened to reach the front of the lock queue.
+    var nowIso = new Date().toISOString();
+
     // 1. The event's own file — the source of truth.
     var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
     var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
@@ -1494,10 +1500,15 @@ function svcDeleteAttendee_(p) {
     }
     if (!found) throw new Error('not_found');
 
-    // 2. The Overview mirror — what getMyPass actually reads. Best effort for
-    // the same reason register()'s mirror write is: the source of truth is
-    // already correct, and a mirror failure must be visible in the log rather
-    // than undo a deletion the operator was told had happened.
+    // 2. The Overview mirror — what getMyPass actually reads. Unlike
+    // register()'s mirror write, a failure here fails OPEN: the mirror would
+    // still carry the email and phone, getMyPass would still hand out the
+    // pass, and the operator would be told the deletion succeeded. So a
+    // missing row (register()'s own mirror write is itself best-effort, so
+    // one may never have existed) is not a failure — there is nothing left
+    // to erase. A thrown error is a failure, and must reach the caller; the
+    // retry is safe because reg_id is not in the wipe list, so a second
+    // attempt re-finds the row and just retries the mirror.
     try {
       var m = readSheet_(SHEETS.ALL_REG);
       var mcol = {}; m.headers.forEach(function (h, i) { mcol[h] = i + 1; });
@@ -1507,16 +1518,23 @@ function svcDeleteAttendee_(p) {
           if (mcol[name]) m.sheet.getRange(j + 2, mcol[name]).setValue('');
         });
         m.sheet.getRange(j + 2, mcol.status).setValue('deleted');
+        mirrorFound = true;
         break;
       }
     } catch (mirrorErr) {
       Logger.log('AllRegistrations erase failed for ' + p.regId + ': ' + mirrorErr);
+      mirrorFailed = true;
     }
   } finally {
     lock.releaseLock();
   }
 
-  audit_(staff, 'deleteAttendee', p.eventId, p.regId, '');
+  // Rethrown after the lock is released (finally already ran above) so a
+  // mirror failure surfaces to the operator instead of being swallowed into
+  // a false { ok: true } and a false "deleteAttendee" audit row.
+  if (mirrorFailed) throw new Error('mirror_failed');
+
+  audit_(staff, 'deleteAttendee', p.eventId, p.regId, mirrorFound ? '' : 'mirror_absent');
   return { ok: true };
 }
 
