@@ -1739,16 +1739,27 @@ function svcUploadBanner_(p) {
 
   // Write the new URL before touching the old file. If the sheet write throws,
   // the event keeps the banner it had and we have one orphan in Drive — far
-  // better than an event whose banner points at a file we just trashed.
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
-  var t = readSheet_(SHEETS.EVENTS);
-  var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+  // better than an event whose banner points at a file we just trashed. The
+  // read-through-write is wrapped so getSheetByName/readSheet_/setValue
+  // throwing (lock, quota, transient service error) can't leave the new file
+  // orphaned with no trace: trash it and rethrow the original error unchanged
+  // so the staff member still sees the real failure, not a silent success.
   var wrote = false;
-  for (var i = 0; i < t.rows.length; i++) {
-    if (t.rows[i][0] !== p.eventId) continue;
-    sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(url);
-    wrote = true;
-    break;
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+    var t = readSheet_(SHEETS.EVENTS);
+    var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+    for (var i = 0; i < t.rows.length; i++) {
+      if (t.rows[i][0] !== p.eventId) continue;
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(url);
+      wrote = true;
+      break;
+    }
+  } catch (writeErr) {
+    try { file.setTrashed(true); } catch (cleanupErr) {
+      Logger.log('svcUploadBanner_ orphan cleanup failed for ' + file.getId() + ': ' + cleanupErr);
+    }
+    throw writeErr;
   }
   if (!wrote) {
     try { file.setTrashed(true); } catch (cleanupErr) {
