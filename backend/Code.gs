@@ -1118,6 +1118,7 @@ function svc(action, p) {
       case 'saveBadgeConfig': data = svcSaveBadgeConfig_(p); break;
       case 'createEvent': data = svcCreateEvent_(p); break;
       case 'setEventProp': data = svcSetEventProp_(p); break;
+      case 'uploadBanner': data = svcUploadBanner_(p); break;
       case 'team': data = svcTeam_(); break;
       case 'setRole': data = svcSetRole_(p); break;
       case 'setPassword': data = svcSetPassword_(p); break;
@@ -1685,6 +1686,89 @@ function probeDriveHotlink() {
   Logger.log('form 2 (thumbnail): https://drive.google.com/thumbnail?id=' + id + '&sz=w1600');
   Logger.log('delete when done: DriveApp.getFileById("' + id + '").setTrashed(true)');
   return id;
+}
+
+// The one place a Drive file id becomes a URL the customer site can load.
+// Verified against a signed-out client before this line was written: 200,
+// image/png, real PNG bytes. drive.google.com/thumbnail 302s here anyway, so
+// this is the canonical form. If Google moves the serving host again, this is
+// the single line to change.
+function driveImageUrl_(fileId) {
+  return 'https://lh3.googleusercontent.com/d/' + fileId + '=w1600';
+}
+
+// The inverse, used only to clean up a banner being replaced. Returns '' for
+// any URL this function did not produce — an Organizer-supplied https link
+// pasted in by hand must never be mistaken for a file we own and trashed.
+function driveFileIdFromUrl_(url) {
+  var m = String(url || '').match(/^https:\/\/lh3\.googleusercontent\.com\/d\/([A-Za-z0-9_-]+)/);
+  return m ? m[1] : '';
+}
+
+// A banner arrives as base64 in the JSON body — Apps Script web apps cannot
+// answer a CORS preflight, so multipart is not available and text/plain JSON is
+// the only door. The console resizes before sending; this is the backstop.
+var BANNER_MAX_BYTES = 1500000;   // 1.5 MB, matching the console's own limit
+
+function svcUploadBanner_(p) {
+  var staff = requireStaff_(p.eventId, 'ADMIN');
+
+  var mime = String(p.mimeType || '');
+  if (mime !== 'image/jpeg' && mime !== 'image/png' && mime !== 'image/webp') {
+    throw new Error('bad_image_type');
+  }
+  var b64 = String(p.dataB64 || '');
+  if (!b64) throw new Error('missing_image');
+
+  var bytes;
+  try {
+    bytes = Utilities.base64Decode(b64);
+  } catch (decodeErr) {
+    throw new Error('bad_image_data');
+  }
+  if (bytes.length > BANNER_MAX_BYTES) throw new Error('image_too_large');
+
+  var ev = eventById_(p.eventId);
+  if (!ev) throw new Error('event_not_found');
+
+  var ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
+  var blob = Utilities.newBlob(bytes, mime, 'banner-' + p.eventId + '-' + Date.now() + ext);
+  var file = DriveApp.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var url = driveImageUrl_(file.getId());
+
+  // Write the new URL before touching the old file. If the sheet write throws,
+  // the event keeps the banner it had and we have one orphan in Drive — far
+  // better than an event whose banner points at a file we just trashed.
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+  var t = readSheet_(SHEETS.EVENTS);
+  var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+  var wrote = false;
+  for (var i = 0; i < t.rows.length; i++) {
+    if (t.rows[i][0] !== p.eventId) continue;
+    sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(url);
+    wrote = true;
+    break;
+  }
+  if (!wrote) {
+    try { file.setTrashed(true); } catch (cleanupErr) {
+      Logger.log('svcUploadBanner_ orphan cleanup failed for ' + file.getId() + ': ' + cleanupErr);
+    }
+    throw new Error('event_not_found');
+  }
+
+  // Best effort, and only for files this system made. An Organizer-supplied
+  // https link typed in by hand returns '' from driveFileIdFromUrl_ and is
+  // left alone — trashing somebody else's file would be unrecoverable.
+  var oldId = driveFileIdFromUrl_(ev.image_url);
+  if (oldId && oldId !== file.getId()) {
+    try { DriveApp.getFileById(oldId).setTrashed(true); } catch (oldErr) {
+      Logger.log('svcUploadBanner_ could not trash previous banner ' + oldId + ': ' + oldErr);
+    }
+  }
+
+  audit_(staff, 'uploadBanner', p.eventId, '', url);
+  return { url: url };
 }
 
 function svcSetEventProp_(p) {
