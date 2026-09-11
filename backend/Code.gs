@@ -1963,3 +1963,78 @@ function svcBadgeData_(p) {
     date: ev ? ev.date_display : '', place: ev ? ev.place : '', config: cfg
   };
 }
+
+// ---------------------------------------------------------------------------
+// ONE-SHOT CLEANUP after the v48 verification run. Run once by hand from the
+// Apps Script editor, then delete this function AND the load-test helpers with
+// it — the account's password is in version control, which is the whole reason
+// this exists.
+//
+// Everything it touches was created by the verification run on 2026-09-11 and
+// nothing else. Event rows are matched on an exact id, never a prefix.
+// ---------------------------------------------------------------------------
+function cleanupAfterV48() {
+  var log = [];
+
+  // 1. The load-test ADMIN account and any session it holds.
+  try {
+    removeLoadTestAccount();
+    log.push('ok  load-test account and its sessions removed');
+  } catch (err) {
+    log.push('!!  load-test removal failed: ' + err);
+  }
+
+  // 2. Stray Drive files: the hotlink probe, and the two banners uploaded to
+  //    the QA event while testing upload-then-replace.
+  ['1mPJM80yV-WnpFEhtUHdf2gYNZQouVDMY',
+   '1SFtgAGGRnktrWQwSBfFIHhhIcnzaZ8lH',
+   '1z7TxHkLXignXVunhHcy1JHtq-pX-uvCo'].forEach(function (id) {
+    try {
+      DriveApp.getFileById(id).setTrashed(true);
+      log.push('ok  trashed Drive file ' + id);
+    } catch (err) {
+      log.push('--  Drive file ' + id + ' not trashed (already gone?): ' + err);
+    }
+  });
+
+  // 3. The two QA events: trash each one's own spreadsheet file, then remove
+  //    its registry row. Exact id match only.
+  var doomed = ['v47', 'qav48del'];
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+  var rows = sh.getDataRange().getValues();
+  var headers = rows[0];
+  var idCol = headers.indexOf('event_id');
+  var fileCol = headers.indexOf('spreadsheet_id');
+
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (doomed.indexOf(String(rows[i][idCol]).trim()) < 0) continue;
+    var fid = fileCol >= 0 ? String(rows[i][fileCol]).trim() : '';
+    if (fid) {
+      try {
+        DriveApp.getFileById(fid).setTrashed(true);
+        log.push('ok  trashed event file ' + fid + ' for ' + rows[i][idCol]);
+      } catch (err) {
+        log.push('--  event file ' + fid + ' not trashed: ' + err);
+      }
+    }
+    sh.deleteRow(i + 1);
+    log.push('ok  removed registry row for ' + rows[i][idCol]);
+  }
+
+  // 4. Badge config rows for the same two events.
+  try {
+    var bsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.BADGE);
+    var brows = bsh.getDataRange().getValues();
+    for (var k = brows.length - 1; k >= 1; k--) {
+      if (doomed.indexOf(String(brows[k][0]).trim()) >= 0) {
+        bsh.deleteRow(k + 1);
+        log.push('ok  removed badge config for ' + brows[k][0]);
+      }
+    }
+  } catch (err) {
+    log.push('--  badge config cleanup: ' + err);
+  }
+
+  log.forEach(function (line) { Logger.log(line); });
+  return log.join('\n');
+}
