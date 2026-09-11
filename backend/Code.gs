@@ -1635,21 +1635,52 @@ function svcCreateEvent_(p) {
 
   var fileId = createEventFile_(id, name);
   try {
-    // Every column, not the first twelve. appendRow fills from column 1 and
-    // stops, so a short array silently leaves the tail blank — which is how
-    // pdpa ended up defaulting to off for every event ever created here, and
-    // how image_url ended up unreachable.
-    SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
-      id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
-      '', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true,
-      name.toUpperCase(), fileId,
-      false,                                    // hidden
-      '',                                       // image_url — blank means "no banner yet"
-      true,                                     // pdpa — a new event asks for consent
-      String(p.doors || ''),                    // doors_at
-      String(p.organizerName || ''),            // organizer_name
-      String(p.organizerContact || '')          // organizer_contact
-    ]);
+    // Positional appendRow assumed the live sheet's header row matched
+    // EVENTS_HEADERS. It doesn't: pdpa and doors_at were both added lazily to
+    // the live sheet in whatever order they were first written by hand, and
+    // organizer_name/organizer_contact didn't exist in the header row at all
+    // until svcSetEventProp_ appended them. The result: pdpa landed in the
+    // wrong column and read back false, and the organizer fields landed
+    // nowhere. svcSetEventProp_ already writes by column name via
+    // ensureEventCol_ and verified correctly against production — do the
+    // same here instead of trusting column order.
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+    var t = readSheet_(SHEETS.EVENTS);
+    var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+
+    var values = {
+      event_id: id,
+      name: name,
+      date_display: String(p.date || 'ยังไม่กำหนดวัน'),
+      place: String(p.place || ''),
+      status_label: 'เปิดรับ',
+      seats_label: '',
+      price_label: String(p.price || 'ไม่มีค่าใช้จ่าย'),
+      accent: themes[theme],
+      theme: theme,
+      open: true,
+      short_label: name.toUpperCase(),
+      spreadsheet_id: fileId,
+      hidden: false,                            // hidden
+      image_url: '',                            // image_url — blank means "no banner yet"
+      pdpa: true,                               // pdpa — a new event asks for consent
+      doors_at: String(p.doors || ''),          // doors_at
+      organizer_name: String(p.organizerName || ''),      // organizer_name
+      organizer_contact: String(p.organizerContact || '') // organizer_contact
+    };
+
+    // Ensure every column exists before writing any of them, so a header row
+    // missing some of these (as the live sheet was) gets them appended first.
+    for (var key in values) {
+      if (values.hasOwnProperty(key)) ensureEventCol_(sh, t, col, key);
+    }
+
+    var row = [];
+    for (var j = 0; j < t.headers.length; j++) row.push('');
+    for (var key2 in values) {
+      if (values.hasOwnProperty(key2)) row[col[key2] - 1] = values[key2];
+    }
+    sh.appendRow(row);
   } catch (err) {
     // The Drive file above already exists but the registry never learned its
     // ID — best-effort clean it up so a retry doesn't leave an orphan behind.
