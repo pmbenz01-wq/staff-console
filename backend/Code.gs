@@ -49,7 +49,12 @@ var SHEETS = {
 // un-hide it) via allEventsRows_() in svcBootstrap_.
 // image_url: a public https image for the customer picker card / form banner
 // (falls back to the striped placeholder client-side when blank).
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at'];
+// organizer_name / organizer_contact: who commissioned this event. Staff-only —
+// these are read by svcBootstrap_ and never by listEvents, because listEvents is
+// public and unauthenticated. See ADR events-checkin-0028: the customer-facing
+// privacy notice deliberately names nobody, but somebody at 1NEVE still has to
+// be able to answer "who gets this event's data" when an attendee asks.
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at', 'organizer_name', 'organizer_contact'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -738,13 +743,30 @@ function allEventsRows_() {
       // Free text, not a time value: "08:15", "เปิดประตู 08:15 น." and
       // "gates 8am" all print fine on a pass. Blank means the pass leaves the
       // line out rather than inventing a time.
-      doors: o.doors_at || ''
+      doors: o.doors_at || '',
+      // Staff-only. svcBootstrap_ passes these straight through; listEvents
+      // deletes them below. Anything new added here is public by default, so
+      // the deletion list is the thing to keep in step.
+      organizerName: o.organizer_name || '',
+      organizerContact: o.organizer_contact || ''
     };
   });
 }
 
 function listEvents() {
-  return allEventsRows_().filter(function (e) { return !e.hidden; });
+  return allEventsRows_()
+    .filter(function (e) { return !e.hidden; })
+    .map(function (e) {
+      // This endpoint answers anyone, with no token. The Organizer's name and
+      // contact are recorded for 1NEVE's own use (ADR events-checkin-0028) and
+      // must not ride out on a public response.
+      var pub = {};
+      Object.keys(e).forEach(function (k) {
+        if (k === 'organizerName' || k === 'organizerContact') return;
+        pub[k] = e[k];
+      });
+      return pub;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,9 +1567,20 @@ function svcCreateEvent_(p) {
 
   var fileId = createEventFile_(id, name);
   try {
+    // Every column, not the first twelve. appendRow fills from column 1 and
+    // stops, so a short array silently leaves the tail blank — which is how
+    // pdpa ended up defaulting to off for every event ever created here, and
+    // how image_url ended up unreachable.
     SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
       id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
-      'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true, name.toUpperCase(), fileId
+      'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true,
+      name.toUpperCase(), fileId,
+      false,                                    // hidden
+      '',                                       // image_url — blank means "no banner yet"
+      true,                                     // pdpa — a new event asks for consent
+      String(p.doors || ''),                    // doors_at
+      String(p.organizerName || ''),            // organizer_name
+      String(p.organizerContact || '')          // organizer_contact
     ]);
   } catch (err) {
     // The Drive file above already exists but the registry never learned its
@@ -1560,6 +1593,19 @@ function svcCreateEvent_(p) {
   SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.BADGE).appendRow([id, 'A6', true, true, true, true, true]);
   audit_(staff, 'createEvent', id, '', name);
   return { id: id, name: name };
+}
+
+// Columns that post-date a live sheet get added on first write rather than
+// making setupSheets() a prerequisite — a settings switch that needs a
+// maintenance function run first is a switch that looks broken. Returns the
+// 1-based column index either way.
+function ensureEventCol_(sh, t, col, name) {
+  if (col[name]) return col[name];
+  var idx = t.headers.length + 1;
+  sh.getRange(1, idx).setValue(name);
+  t.headers.push(name);
+  col[name] = idx;
+  return idx;
 }
 
 function svcSetEventProp_(p) {
@@ -1577,25 +1623,23 @@ function svcSetEventProp_(p) {
     if (p.open !== undefined) sh.getRange(i + 2, col.open).setValue(p.open === true || p.open === 'true');
     if (p.hidden !== undefined) sh.getRange(i + 2, col.hidden).setValue(p.hidden === true || p.hidden === 'true');
     if (p.pdpa !== undefined) {
-      // The column post-dates most sheets. Add it on first write rather than
-      // making a one-off setupSheets() run a prerequisite for the switch.
-      if (!col.pdpa) {
-        sh.getRange(1, t.headers.length + 1).setValue('pdpa');
-        col.pdpa = t.headers.length + 1;
-      }
-      sh.getRange(i + 2, col.pdpa).setValue(p.pdpa === true || p.pdpa === 'true');
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'pdpa')).setValue(p.pdpa === true || p.pdpa === 'true');
     }
     if (p.doors !== undefined) {
-      // Same lazy add as pdpa: the column post-dates existing sheets, and a
-      // switch that needs setupSheets() run first is a switch that looks broken.
-      if (!col.doors_at) {
-        sh.getRange(1, t.headers.length + 1).setValue('doors_at');
-        col.doors_at = t.headers.length + 1;
-        t.headers.push('doors_at');
-      }
-      sh.getRange(i + 2, col.doors_at).setValue(String(p.doors || ''));
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'doors_at')).setValue(String(p.doors || ''));
     }
-    if (p.image !== undefined) sh.getRange(i + 2, col.image_url).setValue(String(p.image || ''));
+    if (p.image !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(String(p.image || ''));
+    }
+    if (p.price !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'price_label')).setValue(String(p.price || ''));
+    }
+    if (p.organizerName !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'organizer_name')).setValue(String(p.organizerName || ''));
+    }
+    if (p.organizerContact !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'organizer_contact')).setValue(String(p.organizerContact || ''));
+    }
     if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
     if (p.date) sh.getRange(i + 2, col.date_display).setValue(p.date);
     if (p.place) sh.getRange(i + 2, col.place).setValue(p.place);
