@@ -107,6 +107,7 @@
 
   var NAV = [
     { id: "dash", label: "ภาพรวมสด" },
+    { id: "event", label: "ตั้งค่างาน" },
     { id: "list", label: "ผู้ลงทะเบียน", count: true },
     { id: "history", label: "ประวัติย้อนหลัง" },
     { id: "fields", label: "ฟิลด์ฟอร์ม" },
@@ -134,6 +135,9 @@
     showNewEvent: false,
     showInvite: false,
     ne: { name: "", date: "", place: "", theme: "editorial", error: "" },
+    // Edits in flight on the ตั้งค่างาน screen. Seeded from the chosen event
+    // by loadScreen() so the inputs render with what the sheet actually holds.
+    es: { name: "", date: "", place: "", organizerName: "", organizerContact: "", doors: "", price: "", error: "", busy: false },
     walkin: { name: "", email: "", phone: "", type: "ทั่วไป" },
     invite: { email: "", name: "", role: "STAFF", scope: "ALL", gate: "", error: "", withPw: false },
     newField: "",
@@ -333,6 +337,15 @@
       // The same rows the customer form renders from, so what staff edit here
       // is literally what the next customer will be asked.
       api("fields", { eventId: id }).then(function (d) { state.fields = d || []; render(); }).catch(fail);
+    } else if (s === "event") {
+      // No round trip — bootstrap already carries every field this screen edits.
+      var e = ev() || {};
+      state.es = {
+        name: e.name || "", date: e.date || "", place: e.place || "",
+        organizerName: e.organizerName || "", organizerContact: e.organizerContact || "",
+        doors: e.doors || "", price: e.price || "", error: "", busy: false
+      };
+      render();
     } else if (s === "team") {
       api("team").then(function (d) { state.team = d; render(); }).catch(fail);
     }
@@ -511,6 +524,7 @@
   function renderPage() {
     switch (state.screen) {
       case "dash": return renderDash();
+      case "event": return renderEvent();
       case "list": return renderList();
       case "history": return renderHistory();
       case "fields": return renderFields();
@@ -655,6 +669,113 @@
       '<div style="width:88px;flex:none;text-align:right">ผล</div></div>' +
       (rows || '<div class="empty">ยังไม่มีประวัติการสแกน</div>') +
       '<div class="tfoot"><div>' + state.history.length + " รายการ</div></div></div></div>";
+  }
+
+  // ---------------------------------------------------------------------
+  function renderEvent() {
+    var e = ev() || {};
+    var admin = can("ADMIN");
+    var es = state.es;
+
+    function textRow(id, label, value, hint) {
+      return '<div class="field"><div class="field-label">' + esc(label) + "</div>" +
+        '<input id="' + id + '" value="' + esc(value) + '"' + (admin ? "" : " disabled") + ' />' +
+        (hint ? '<div class="muted" style="font:300 11px/1.5 Prompt,sans-serif;margin-top:4px">' + esc(hint) + "</div>" : "") +
+        "</div>";
+    }
+
+    function switchRow(actName, label, on, onText, offText, detail) {
+      return '<div class="card" style="padding:16px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+        '<div style="flex:1;min-width:220px"><div style="font:500 13px Prompt,sans-serif">' + esc(label) + "</div>" +
+        '<div class="muted" style="font:300 11.5px/1.5 Prompt,sans-serif;margin-top:3px">' + esc(detail) + "</div></div>" +
+        (admin
+          ? '<button class="btn-ghost" data-act="' + actName + '" data-on="' + (on ? "0" : "1") + '"' +
+            (on ? ' style="border-color:var(--accent);color:var(--accent)"' : "") + ">" +
+            esc(on ? onText : offText) + "</button>"
+          : '<span class="muted">ต้องเป็น ADMIN</span>') +
+        "</div>";
+    }
+
+    var open = !!e.open;
+    var priceOn = !!(e.price && String(e.price).trim());
+
+    var bannerPreview = e.image
+      ? '<img src="' + esc(e.image) + '" alt="" style="width:100%;display:block;aspect-ratio:16/9;object-fit:cover" />'
+      : '<div style="width:100%;aspect-ratio:16/9;background:linear-gradient(148deg,#d8482b 0%,#8e3524 34%,#17150f 82%);' +
+        'display:flex;align-items:center;justify-content:center;color:rgba(244,241,230,.72);' +
+        'font:600 10px Prompt,sans-serif;letter-spacing:.3em">1NEVE</div>';
+
+    var bannerCard = '<div class="card" style="padding:0;overflow:hidden">' + bannerPreview +
+      '<div style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+      '<div style="flex:1;min-width:200px"><div style="font:500 13px Prompt,sans-serif">ภาพแบนเนอร์</div>' +
+      '<div class="muted" style="font:300 11.5px/1.5 Prompt,sans-serif;margin-top:3px">' +
+      (e.image
+        ? "ใช้ภาพที่อัพโหลดไว้ · ระบบจะย่อให้กว้างสุด 1600px ก่อนส่ง"
+        : "ยังไม่ได้ใส่ภาพ · หน้าลูกค้าจะแสดงพื้นผิวของ 1NEVE แทน") +
+      "</div>" +
+      '<div class="muted" style="font:300 11px/1.5 Prompt,sans-serif;margin-top:6px">' +
+      "ของสำคัญในภาพไม่ควรอยู่ครึ่งล่าง เพราะชื่องานและปุ่มลงทะเบียนทับอยู่</div></div>" +
+      (admin
+        ? '<input type="file" id="banner-file" accept="image/jpeg,image/png,image/webp" style="display:none" />' +
+          '<button class="btn-ghost" data-act="banner-pick" style="border-color:var(--accent);color:var(--accent);padding:11px 16px">' +
+          (state.es.busy ? "กำลังอัพโหลด…" : (e.image ? "เปลี่ยนภาพ" : "อัพโหลดภาพ")) + "</button>"
+        : '<span class="muted">ต้องเป็น ADMIN</span>') +
+      "</div></div>";
+
+    return '<div class="split"><div class="split-main">' +
+      '<div><div class="page-title">ตั้งค่างาน</div>' +
+      '<div class="page-sub">ค่าทั้งหมดของงานนี้อยู่ที่เดียว · ' +
+      "ช่องที่ทำเครื่องหมาย <b>เฉพาะภายใน</b> ไม่เคยถูกส่งออกไปหน้าลูกค้า</div></div>" +
+
+      '<div class="card" style="padding:20px">' +
+      textRow("es-name", "ชื่องาน", es.name, "") +
+      textRow("es-date", "วันที่จัด", es.date, "ข้อความอิสระ เช่น 15 มี.ค. 70") +
+      textRow("es-place", "สถานที่", es.place, "") +
+      textRow("es-doors", "เวลาเปิดประตู", es.doors, "ข้อความอิสระ พิมพ์บนบัตร · เว้นว่างได้") +
+      "</div>" +
+
+      '<div class="card" style="padding:20px">' +
+      '<div class="side-kicker" style="margin-bottom:12px">ผู้จัดงาน · เฉพาะภายใน</div>' +
+      textRow("es-org-name", "ชื่อผู้จัดงาน", es.organizerName,
+        "ลูกค้าไม่เห็นช่องนี้ · มีไว้ให้ตอบได้ว่าใครรับข้อมูลของงานนี้ไป") +
+      textRow("es-org-contact", "ผู้ติดต่อผู้จัดงาน", es.organizerContact, "") +
+      "</div>" +
+
+      bannerCard +
+
+      switchRow("toggle-open", "เปิดรับลงทะเบียน", open, "เปิดอยู่", "ปิดอยู่",
+        open ? "หน้าลูกค้าเปิดให้ลงทะเบียนได้" : "หน้าลูกค้าแสดงว่าปิดรับแล้ว และปุ่มลงทะเบียนกดไม่ได้") +
+
+      '<div class="card" style="padding:16px 20px">' +
+      '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:220px"><div style="font:500 13px Prompt,sans-serif">ค่าเข้างาน</div>' +
+      '<div class="muted" style="font:300 11.5px/1.5 Prompt,sans-serif;margin-top:3px">' +
+      (priceOn ? "แสดงบรรทัดนี้ในข้อมูลงาน" : "ไม่แสดงบรรทัดค่าเข้างานเลย") + "</div></div>" +
+      (admin
+        ? '<button class="btn-ghost" data-act="toggle-price" data-on="' + (priceOn ? "0" : "1") + '"' +
+          (priceOn ? ' style="border-color:var(--accent);color:var(--accent)"' : "") + ">" +
+          (priceOn ? "เปิดอยู่" : "ปิดอยู่") + "</button>"
+        : '<span class="muted">ต้องเป็น ADMIN</span>') +
+      "</div>" +
+      (priceOn ? '<div style="margin-top:14px">' + textRow("es-price", "ข้อความที่แสดง", es.price, "เช่น ฿500 หรือ ฟรีสำหรับสมาชิก") + "</div>" : "") +
+      "</div>" +
+
+      (es.error ? '<div class="err">' + esc(es.error) + "</div>" : "") +
+      (admin
+        ? '<div><button class="btn-gold" data-act="event-save">บันทึกการตั้งค่า</button></div>'
+        : '<div class="muted">ต้องเป็น ADMIN จึงจะบันทึกได้</div>') +
+      "</div>" +
+
+      '<div class="split-side"><div class="side-kicker">หน้าลูกค้าจะเห็น</div>' +
+      '<div class="card" style="padding:0;overflow:hidden">' + bannerPreview +
+      '<div style="padding:18px 20px">' +
+      '<div class="mono" style="font-size:9.5px;letter-spacing:.26em;color:var(--accent)">' + esc(es.date || "") + "</div>" +
+      '<div class="serif" style="font-size:22px;font-weight:200;line-height:1.2;margin-top:9px">' + esc(es.name || "") + "</div>" +
+      '<div class="muted" style="font:300 12px Prompt,sans-serif;margin-top:4px">' + esc(es.place || "") + "</div>" +
+      '<div style="margin-top:14px;padding:12px 0;text-align:center;font:600 12px Prompt,sans-serif;' +
+      (open ? "background:var(--accent);color:#fff" : "background:#ded8c6;color:#57533f") + '">' +
+      (open ? "ลงทะเบียน" : "ปิดรับแล้ว") + "</div>" +
+      "</div></div></div></div>";
   }
 
   // ---------------------------------------------------------------------
@@ -889,6 +1010,19 @@
     bindInput("ne-name", state.ne, "name");
     bindInput("ne-date", state.ne, "date");
     bindInput("ne-place", state.ne, "place");
+    bindInput("es-name", state.es, "name");
+    bindInput("es-date", state.es, "date");
+    bindInput("es-place", state.es, "place");
+    bindInput("es-doors", state.es, "doors");
+    bindInput("es-price", state.es, "price");
+    bindInput("es-org-name", state.es, "organizerName");
+    bindInput("es-org-contact", state.es, "organizerContact");
+
+    var bf = document.getElementById("banner-file");
+    if (bf) bf.addEventListener("change", function (e2) {
+      var f = e2.target.files && e2.target.files[0];
+      if (f) uploadBanner(f);
+    });
     bindInput("inv-email", state.invite, "email");
     bindInput("inv-name", state.invite, "name");
     bindInput("inv-gate", state.invite, "gate");
@@ -1029,6 +1163,34 @@
       case "print-badge":
         window.open(printUrl(el.dataset.id), "_blank");
         break;
+      case "banner-pick": {
+        var picker = document.getElementById("banner-file");
+        if (picker) picker.click();
+        break;
+      }
+      case "toggle-open": {
+        var wantOpen = el.dataset.on === "1";
+        api("setEventProp", { eventId: state.eventId, open: wantOpen }).then(function () {
+          var cur = ev(); if (cur) cur.open = wantOpen;
+          flash(wantOpen ? "เปิดรับลงทะเบียนแล้ว" : "ปิดรับลงทะเบียนแล้ว");
+          render();
+        }).catch(fail);
+        break;
+      }
+      case "toggle-price": {
+        var wantPrice = el.dataset.on === "1";
+        // Off writes an empty string — the customer site skips a fact row whose
+        // value is blank, so there is no separate "show price" column to keep
+        // in step with the text itself.
+        var text = wantPrice ? (state.es.price || "ไม่มีค่าใช้จ่าย") : "";
+        api("setEventProp", { eventId: state.eventId, price: text }).then(function () {
+          var cur = ev(); if (cur) cur.price = text;
+          state.es.price = text;
+          render();
+        }).catch(fail);
+        break;
+      }
+      case "event-save": saveEventSettings(); break;
     }
   }
 
@@ -1108,6 +1270,99 @@
     });
   }
 
+  function saveEventSettings() {
+    var es = state.es;
+    if (!es.name.trim()) { es.error = "กรุณากรอกชื่องาน"; render(); return; }
+    es.error = "";
+    // The price switch (toggle-price) writes state.es.price only as a side
+    // effect of the api() call succeeding — it does not touch what the user
+    // may have typed into the price text box in the meantime. Without this,
+    // pressing บันทึกการตั้งค่า after editing the price text would silently
+    // discard that edit: the same class of silent no-op this project exists
+    // to remove.
+    var cur0 = ev() || {};
+    var priceOn = !!(cur0.price && String(cur0.price).trim());
+    api("setEventProp", {
+      eventId: state.eventId,
+      name: es.name.trim(),
+      date: es.date.trim(),
+      place: es.place.trim(),
+      doors: es.doors.trim(),
+      organizerName: es.organizerName.trim(),
+      organizerContact: es.organizerContact.trim(),
+      price: priceOn ? es.price.trim() : ''
+    }).then(function () {
+      var cur = ev();
+      if (cur) {
+        cur.name = es.name.trim(); cur.date = es.date.trim(); cur.place = es.place.trim();
+        cur.doors = es.doors.trim();
+        cur.organizerName = es.organizerName.trim();
+        cur.organizerContact = es.organizerContact.trim();
+        cur.price = priceOn ? es.price.trim() : '';
+      }
+      flash("บันทึกแล้ว");
+      render();
+    }).catch(function (e2) { es.error = String(e2.message || e2); render(); });
+  }
+
+  var BANNER_SRC_MAX = 12 * 1024 * 1024;   // reject before we even try to decode
+  var BANNER_OUT_MAX = 1500000;            // must match BANNER_MAX_BYTES in Code.gs
+  var BANNER_MAX_W = 1600;
+
+  // Resizing happens here, not on the server. A phone photo is 3-5 MB and grows
+  // by a third again in base64; sending that through an Apps Script body is a
+  // risk taken for nothing, and a 5 MB hero is the page-load problem this
+  // project already had once. 1600px is wider than the hero ever renders.
+  function uploadBanner(file) {
+    var es = state.es;
+    if (file.size > BANNER_SRC_MAX) {
+      es.error = "ไฟล์ใหญ่เกินไป (เกิน 12 MB) กรุณาย่อก่อนอัพโหลด";
+      render(); return;
+    }
+    es.error = ""; es.busy = true; render();
+
+    var reader = new FileReader();
+    reader.onerror = function () { es.busy = false; es.error = "อ่านไฟล์ไม่สำเร็จ"; render(); };
+    reader.onload = function () {
+      var img = new Image();
+      img.onerror = function () { es.busy = false; es.error = "ไฟล์นี้ไม่ใช่รูปภาพที่เปิดได้"; render(); };
+      img.onload = function () {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        if (w > BANNER_MAX_W) { h = Math.round(h * BANNER_MAX_W / w); w = BANNER_MAX_W; }
+        var canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+        var b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+        // base64 carries 3 bytes per 4 characters; padding makes this an
+        // over-estimate by at most two bytes, which is the safe direction.
+        if (b64.length * 3 / 4 > BANNER_OUT_MAX) {
+          es.busy = false;
+          es.error = "ย่อแล้วยังใหญ่เกิน 1.5 MB กรุณาใช้ภาพอื่น";
+          render(); return;
+        }
+        api("uploadBanner", { eventId: state.eventId, dataB64: b64, mimeType: "image/jpeg" })
+          .then(function (r) {
+            var cur = ev(); if (cur) cur.image = r.url;
+            es.busy = false;
+            flash("อัพโหลดภาพแล้ว");
+            render();
+          })
+          .catch(function (e2) {
+            es.busy = false;
+            var m = String(e2.message || e2);
+            es.error =
+              m.indexOf("image_too_large") >= 0 ? "ไฟล์ใหญ่เกินไป" :
+              m.indexOf("bad_image_type") >= 0 ? "รองรับเฉพาะ JPG PNG และ WebP" :
+              m.indexOf("bad_image_data") >= 0 ? "ข้อมูลภาพเสียหาย" : m;
+            render();
+          });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
   function createEvent() {
     if (!state.ne.name.trim()) { state.ne.error = "กรุณากรอกชื่องาน"; render(); return; }
     api("createEvent", {
@@ -1119,7 +1374,7 @@
         state.events = d.events || [];
         state.badgeCfg = d.badge || {};
         state.eventId = r.id;
-        state.screen = "fields";
+        state.screen = "event";
         render();
         loadScreen();
         flash("สร้างงาน " + r.name + " แล้ว");
