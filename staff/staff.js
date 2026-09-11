@@ -717,7 +717,11 @@
       "ของสำคัญในภาพไม่ควรอยู่ครึ่งล่าง เพราะชื่องานและปุ่มลงทะเบียนทับอยู่</div></div>" +
       (admin
         ? '<input type="file" id="banner-file" accept="image/jpeg,image/png,image/webp" style="display:none" />' +
-          '<button class="btn-ghost" data-act="banner-pick" style="border-color:var(--accent);color:var(--accent);padding:11px 16px">' +
+          // No data-act while an upload is in flight — otherwise a click here
+          // opens the picker again and starts a second, concurrent
+          // uploadBanner() before the first one's api() call has resolved.
+          '<button class="btn-ghost"' + (state.es.busy ? "" : ' data-act="banner-pick"') +
+          ' style="border-color:var(--accent);color:var(--accent);padding:11px 16px">' +
           (state.es.busy ? "กำลังอัพโหลด…" : (e.image ? "เปลี่ยนภาพ" : "อัพโหลดภาพ")) + "</button>"
         : '<span class="muted">ต้องเป็น ADMIN</span>') +
       "</div></div>";
@@ -1179,15 +1183,28 @@
       }
       case "toggle-price": {
         var wantPrice = el.dataset.on === "1";
-        // Off writes an empty string — the customer site skips a fact row whose
-        // value is blank, so there is no separate "show price" column to keep
-        // in step with the text itself.
-        var text = wantPrice ? (state.es.price || "ไม่มีค่าใช้จ่าย") : "";
-        api("setEventProp", { eventId: state.eventId, price: text }).then(function () {
-          var cur = ev(); if (cur) cur.price = text;
-          state.es.price = text;
-          render();
-        }).catch(fail);
+        // The toggle must not own the text box — state.es.price is the
+        // editing buffer for whatever staff have typed, and clobbering it
+        // here is how a typed price used to get silently thrown away by an
+        // off/on click (fixed round: this case previously wrote
+        // state.es.price = text unconditionally, so switching off wiped the
+        // box to "" and switching back on then fell through to the "no
+        // price" default and pushed that straight to the sheet with no save
+        // step). Off writes an empty string to the sheet and leaves the box
+        // alone; on sends whatever is currently in the box, falling back to
+        // the default text only when the box is genuinely empty.
+        if (!wantPrice) {
+          api("setEventProp", { eventId: state.eventId, price: "" }).then(function () {
+            var cur = ev(); if (cur) cur.price = "";
+            render();
+          }).catch(fail);
+        } else {
+          var text = (state.es.price && state.es.price.trim()) ? state.es.price.trim() : "ไม่มีค่าใช้จ่าย";
+          api("setEventProp", { eventId: state.eventId, price: text }).then(function () {
+            var cur = ev(); if (cur) cur.price = text;
+            render();
+          }).catch(fail);
+        }
         break;
       }
       case "event-save": saveEventSettings(); break;
