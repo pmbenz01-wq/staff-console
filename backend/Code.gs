@@ -49,7 +49,20 @@ var SHEETS = {
 // un-hide it) via allEventsRows_() in svcBootstrap_.
 // image_url: a public https image for the customer picker card / form banner
 // (falls back to the striped placeholder client-side when blank).
-var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at'];
+// organizer_name / organizer_contact: who commissioned this event. Staff-only —
+// these are read by svcBootstrap_ and never by listEvents, because listEvents is
+// public and unauthenticated. See ADR events-checkin-0028: the customer-facing
+// privacy notice deliberately names nobody, but somebody at 1NEVE still has to
+// be able to answer "who gets this event's data" when an attendee asks.
+var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at', 'organizer_name', 'organizer_contact'];
+// The public keys listEvents() is allowed to send. listEvents is public and
+// unauthenticated, so this is an allowlist, not a denylist: a field left off
+// this list is simply missing from the customer site (visible, obvious,
+// harmless) rather than leaked to it (invisible, and — for something like
+// organizerName/organizerContact — a PDPA problem). Adding a new public field
+// means adding it here on purpose; a staff-only field added elsewhere needs
+// no corresponding edit to stay private.
+var PUBLIC_EVENT_KEYS = ['id', 'name', 'date', 'place', 'status', 'seats', 'price', 'accent', 'theme', 'open', 'short', 'hidden', 'image', 'pdpa', 'doors'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -738,13 +751,28 @@ function allEventsRows_() {
       // Free text, not a time value: "08:15", "เปิดประตู 08:15 น." and
       // "gates 8am" all print fine on a pass. Blank means the pass leaves the
       // line out rather than inventing a time.
-      doors: o.doors_at || ''
+      doors: o.doors_at || '',
+      // Staff-only. svcBootstrap_ passes these straight through; listEvents
+      // only copies PUBLIC_EVENT_KEYS below, so a field added here stays
+      // private by default and never needs an edit elsewhere to do so.
+      organizerName: o.organizer_name || '',
+      organizerContact: o.organizer_contact || ''
     };
   });
 }
 
 function listEvents() {
-  return allEventsRows_().filter(function (e) { return !e.hidden; });
+  return allEventsRows_()
+    .filter(function (e) { return !e.hidden; })
+    .map(function (e) {
+      // This endpoint answers anyone, with no token. Only PUBLIC_EVENT_KEYS
+      // goes out — the Organizer's name and contact (recorded for 1NEVE's own
+      // use, ADR events-checkin-0028) are left off that list on purpose, and
+      // so is anything staff-only added to allEventsRows_() later.
+      var pub = {};
+      PUBLIC_EVENT_KEYS.forEach(function (k) { pub[k] = e[k]; });
+      return pub;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1124,7 @@ function svc(action, p) {
       case 'saveBadgeConfig': data = svcSaveBadgeConfig_(p); break;
       case 'createEvent': data = svcCreateEvent_(p); break;
       case 'setEventProp': data = svcSetEventProp_(p); break;
+      case 'uploadBanner': data = svcUploadBanner_(p); break;
       case 'team': data = svcTeam_(); break;
       case 'setRole': data = svcSetRole_(p); break;
       case 'setPassword': data = svcSetPassword_(p); break;
@@ -1437,22 +1466,83 @@ function svcAddWalkin_(p) {
   return { regId: regId, badgeCode: badgeCode, name: name, qrPayload: p.eventId + '|' + badgeCode + '|' + signQr_(p.eventId, badgeCode) };
 }
 
-// Soft delete — the row stays so the scan history still resolves, but every
-// read filters it out.
+// Erasure, not a strikethrough. ADR events-checkin-0029 publishes "kept until
+// someone asks for it to be gone", which is only true if asking works.
+// The identifying columns are cleared; reg_id, event_id, status, registered_at
+// and checked_in_at stay, so last year's attendance numbers do not move.
+// badge_code and qr_token are cleared too — a pass whose owner asked to be
+// forgotten must not still open a door.
 function svcDeleteAttendee_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
-  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
-  var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
-  for (var i = 0; i < t.rows.length; i++) {
-    var o = rowToObj_(t.headers, t.rows[i]);
-    if (o.reg_id !== p.regId) continue;
-    t.sheet.getRange(i + 2, col.status).setValue('deleted');
-    t.sheet.getRange(i + 2, col.updated_at).setValue(new Date().toISOString());
-    t.sheet.getRange(i + 2, col.updated_by).setValue(staff.email);
-    audit_(staff, 'deleteAttendee', p.eventId, p.regId, o.full_name);
-    return { ok: true };
+  var wipe = ['full_name', 'email', 'phone', 'org', 'answers_json', 'badge_code', 'qr_token'];
+
+  // Under the same script lock register() takes, because this clears the very
+  // columns a concurrent registration is appending.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw new Error('busy');
+
+  var found = false;
+  var mirrorFound = false;
+  var mirrorFailed = false;
+  try {
+    // register() computes its stamp inside the try, after the lock is held,
+    // so the value written is the time of the write, not the time this call
+    // happened to reach the front of the lock queue.
+    var nowIso = new Date().toISOString();
+
+    // 1. The event's own file — the source of truth.
+    var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
+    var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+    for (var i = 0; i < t.rows.length; i++) {
+      var o = rowToObj_(t.headers, t.rows[i]);
+      if (o.reg_id !== p.regId) continue;
+      t.sheet.getRange(i + 2, col.status).setValue('deleted');
+      wipe.forEach(function (name) {
+        if (col[name]) t.sheet.getRange(i + 2, col[name]).setValue('');
+      });
+      t.sheet.getRange(i + 2, col.updated_at).setValue(nowIso);
+      t.sheet.getRange(i + 2, col.updated_by).setValue(staff.email);
+      found = true;
+      break;
+    }
+    if (!found) throw new Error('not_found');
+
+    // 2. The Overview mirror — what getMyPass actually reads. Unlike
+    // register()'s mirror write, a failure here fails OPEN: the mirror would
+    // still carry the email and phone, getMyPass would still hand out the
+    // pass, and the operator would be told the deletion succeeded. So a
+    // missing row (register()'s own mirror write is itself best-effort, so
+    // one may never have existed) is not a failure — there is nothing left
+    // to erase. A thrown error is a failure, and must reach the caller; the
+    // retry is safe because reg_id is not in the wipe list, so a second
+    // attempt re-finds the row and just retries the mirror.
+    try {
+      var m = readSheet_(SHEETS.ALL_REG);
+      var mcol = {}; m.headers.forEach(function (h, i) { mcol[h] = i + 1; });
+      for (var j = 0; j < m.rows.length; j++) {
+        if (rowToObj_(m.headers, m.rows[j]).reg_id !== p.regId) continue;
+        m.sheet.getRange(j + 2, mcol.status).setValue('deleted');
+        wipe.forEach(function (name) {
+          if (mcol[name]) m.sheet.getRange(j + 2, mcol[name]).setValue('');
+        });
+        mirrorFound = true;
+        break;
+      }
+    } catch (mirrorErr) {
+      Logger.log('AllRegistrations erase failed for ' + p.regId + ': ' + mirrorErr);
+      mirrorFailed = true;
+    }
+  } finally {
+    lock.releaseLock();
   }
-  throw new Error('not_found');
+
+  // Rethrown after the lock is released (finally already ran above) so a
+  // mirror failure surfaces to the operator instead of being swallowed into
+  // a false { ok: true } and a false "deleteAttendee" audit row.
+  if (mirrorFailed) throw new Error('mirror_failed');
+
+  audit_(staff, 'deleteAttendee', p.eventId, p.regId, mirrorFound ? '' : 'mirror_absent');
+  return { ok: true };
 }
 
 function audit_(staff, action, eventId, targetId, detail) {
@@ -1545,9 +1635,20 @@ function svcCreateEvent_(p) {
 
   var fileId = createEventFile_(id, name);
   try {
+    // Every column, not the first twelve. appendRow fills from column 1 and
+    // stops, so a short array silently leaves the tail blank — which is how
+    // pdpa ended up defaulting to off for every event ever created here, and
+    // how image_url ended up unreachable.
     SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
       id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
-      'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true, name.toUpperCase(), fileId
+      '', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true,
+      name.toUpperCase(), fileId,
+      false,                                    // hidden
+      '',                                       // image_url — blank means "no banner yet"
+      true,                                     // pdpa — a new event asks for consent
+      String(p.doors || ''),                    // doors_at
+      String(p.organizerName || ''),            // organizer_name
+      String(p.organizerContact || '')          // organizer_contact
     ]);
   } catch (err) {
     // The Drive file above already exists but the registry never learned its
@@ -1560,6 +1661,131 @@ function svcCreateEvent_(p) {
   SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.BADGE).appendRow([id, 'A6', true, true, true, true, true]);
   audit_(staff, 'createEvent', id, '', name);
   return { id: id, name: name };
+}
+
+// Columns that post-date a live sheet get added on first write rather than
+// making setupSheets() a prerequisite — a settings switch that needs a
+// maintenance function run first is a switch that looks broken. Returns the
+// 1-based column index either way.
+function ensureEventCol_(sh, t, col, name) {
+  if (col[name]) return col[name];
+  var idx = t.headers.length + 1;
+  sh.getRange(1, idx).setValue(name);
+  t.headers.push(name);
+  col[name] = idx;
+  return idx;
+}
+
+// Run by hand from the Apps Script editor. Creates one tiny public image and
+// logs both candidate hotlink forms so they can be opened from a signed-out
+// browser. The whole banner feature depends on one of these working; nothing
+// in the codebase had ever tested it.
+function probeDriveHotlink() {
+  // A 1x1 red PNG — smallest thing that still proves an image decoded.
+  var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  var blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/png', 'hotlink-probe.png');
+  var file = DriveApp.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var id = file.getId();
+  Logger.log('fileId: ' + id);
+  Logger.log('form 1 (lh3): https://lh3.googleusercontent.com/d/' + id);
+  Logger.log('form 2 (thumbnail): https://drive.google.com/thumbnail?id=' + id + '&sz=w1600');
+  Logger.log('delete when done: DriveApp.getFileById("' + id + '").setTrashed(true)');
+  return id;
+}
+
+// The one place a Drive file id becomes a URL the customer site can load.
+// Verified against a signed-out client before this line was written: 200,
+// image/png, real PNG bytes. drive.google.com/thumbnail 302s here anyway, so
+// this is the canonical form. If Google moves the serving host again, this is
+// the single line to change.
+function driveImageUrl_(fileId) {
+  return 'https://lh3.googleusercontent.com/d/' + fileId + '=w1600';
+}
+
+// The inverse, used only to clean up a banner being replaced. Returns '' for
+// any URL this function did not produce — an Organizer-supplied https link
+// pasted in by hand must never be mistaken for a file we own and trashed.
+function driveFileIdFromUrl_(url) {
+  var m = String(url || '').match(/^https:\/\/lh3\.googleusercontent\.com\/d\/([A-Za-z0-9_-]+)/);
+  return m ? m[1] : '';
+}
+
+// A banner arrives as base64 in the JSON body — Apps Script web apps cannot
+// answer a CORS preflight, so multipart is not available and text/plain JSON is
+// the only door. The console resizes before sending; this is the backstop.
+var BANNER_MAX_BYTES = 1500000;   // 1.5 MB, matching the console's own limit
+
+function svcUploadBanner_(p) {
+  var staff = requireStaff_(p.eventId, 'ADMIN');
+
+  var mime = String(p.mimeType || '');
+  if (mime !== 'image/jpeg' && mime !== 'image/png' && mime !== 'image/webp') {
+    throw new Error('bad_image_type');
+  }
+  var b64 = String(p.dataB64 || '');
+  if (!b64) throw new Error('missing_image');
+
+  var bytes;
+  try {
+    bytes = Utilities.base64Decode(b64);
+  } catch (decodeErr) {
+    throw new Error('bad_image_data');
+  }
+  if (bytes.length > BANNER_MAX_BYTES) throw new Error('image_too_large');
+
+  var ev = eventById_(p.eventId);
+  if (!ev) throw new Error('event_not_found');
+
+  var ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
+  var blob = Utilities.newBlob(bytes, mime, 'banner-' + p.eventId + '-' + Date.now() + ext);
+  var file = DriveApp.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var url = driveImageUrl_(file.getId());
+
+  // Write the new URL before touching the old file. If the sheet write throws,
+  // the event keeps the banner it had and we have one orphan in Drive — far
+  // better than an event whose banner points at a file we just trashed. The
+  // read-through-write is wrapped so getSheetByName/readSheet_/setValue
+  // throwing (lock, quota, transient service error) can't leave the new file
+  // orphaned with no trace: trash it and rethrow the original error unchanged
+  // so the staff member still sees the real failure, not a silent success.
+  var wrote = false;
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS);
+    var t = readSheet_(SHEETS.EVENTS);
+    var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+    for (var i = 0; i < t.rows.length; i++) {
+      if (t.rows[i][0] !== p.eventId) continue;
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(url);
+      wrote = true;
+      break;
+    }
+  } catch (writeErr) {
+    try { file.setTrashed(true); } catch (cleanupErr) {
+      Logger.log('svcUploadBanner_ orphan cleanup failed for ' + file.getId() + ': ' + cleanupErr);
+    }
+    throw writeErr;
+  }
+  if (!wrote) {
+    try { file.setTrashed(true); } catch (cleanupErr) {
+      Logger.log('svcUploadBanner_ orphan cleanup failed for ' + file.getId() + ': ' + cleanupErr);
+    }
+    throw new Error('event_not_found');
+  }
+
+  // Best effort, and only for files this system made. An Organizer-supplied
+  // https link typed in by hand returns '' from driveFileIdFromUrl_ and is
+  // left alone — trashing somebody else's file would be unrecoverable.
+  var oldId = driveFileIdFromUrl_(ev.image_url);
+  if (oldId && oldId !== file.getId()) {
+    try { DriveApp.getFileById(oldId).setTrashed(true); } catch (oldErr) {
+      Logger.log('svcUploadBanner_ could not trash previous banner ' + oldId + ': ' + oldErr);
+    }
+  }
+
+  audit_(staff, 'uploadBanner', p.eventId, '', url);
+  return { url: url };
 }
 
 function svcSetEventProp_(p) {
@@ -1577,28 +1803,26 @@ function svcSetEventProp_(p) {
     if (p.open !== undefined) sh.getRange(i + 2, col.open).setValue(p.open === true || p.open === 'true');
     if (p.hidden !== undefined) sh.getRange(i + 2, col.hidden).setValue(p.hidden === true || p.hidden === 'true');
     if (p.pdpa !== undefined) {
-      // The column post-dates most sheets. Add it on first write rather than
-      // making a one-off setupSheets() run a prerequisite for the switch.
-      if (!col.pdpa) {
-        sh.getRange(1, t.headers.length + 1).setValue('pdpa');
-        col.pdpa = t.headers.length + 1;
-      }
-      sh.getRange(i + 2, col.pdpa).setValue(p.pdpa === true || p.pdpa === 'true');
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'pdpa')).setValue(p.pdpa === true || p.pdpa === 'true');
     }
     if (p.doors !== undefined) {
-      // Same lazy add as pdpa: the column post-dates existing sheets, and a
-      // switch that needs setupSheets() run first is a switch that looks broken.
-      if (!col.doors_at) {
-        sh.getRange(1, t.headers.length + 1).setValue('doors_at');
-        col.doors_at = t.headers.length + 1;
-        t.headers.push('doors_at');
-      }
-      sh.getRange(i + 2, col.doors_at).setValue(String(p.doors || ''));
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'doors_at')).setValue(String(p.doors || ''));
     }
-    if (p.image !== undefined) sh.getRange(i + 2, col.image_url).setValue(String(p.image || ''));
-    if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
-    if (p.date) sh.getRange(i + 2, col.date_display).setValue(p.date);
-    if (p.place) sh.getRange(i + 2, col.place).setValue(p.place);
+    if (p.image !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'image_url')).setValue(String(p.image || ''));
+    }
+    if (p.price !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'price_label')).setValue(String(p.price || ''));
+    }
+    if (p.organizerName !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'organizer_name')).setValue(String(p.organizerName || ''));
+    }
+    if (p.organizerContact !== undefined) {
+      sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'organizer_contact')).setValue(String(p.organizerContact || ''));
+    }
+    if (p.name !== undefined && String(p.name).trim()) sh.getRange(i + 2, col.name).setValue(p.name);
+    if (p.date !== undefined) sh.getRange(i + 2, col.date_display).setValue(String(p.date || ''));
+    if (p.place !== undefined) sh.getRange(i + 2, col.place).setValue(String(p.place || ''));
     audit_(staff, 'setEventProp', p.eventId, '', JSON.stringify(p));
     return { ok: true };
   }
