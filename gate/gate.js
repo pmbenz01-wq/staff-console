@@ -7,10 +7,31 @@
 (function () {
   "use strict";
 
+  // index.html sets the ground before the first paint, so a phone on dark
+  // never flashes cream. These two only exist so the button can change it
+  // afterwards — the key and the two values are the contract with that script.
+  function currentTheme() {
+    var t = null;
+    try { t = localStorage.getItem(THEME_KEY); } catch (e) {}
+    if (t === "dark" || t === "light") return t;
+    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  }
+
+  function applyTheme(t) {
+    if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    else document.documentElement.removeAttribute("data-theme");
+    var m = document.getElementById("theme-color");
+    if (m) m.setAttribute("content", t === "dark" ? "#13110c" : "#f4f1e6");
+    // Private mode throws here. The screen still changes; the choice just
+    // does not survive a reload, which beats refusing to switch at all.
+    try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
+  }
+
   var ID_TOKEN_KEY = "staff-id-token";     // shared shape with the console
   var SESSION_KEY = "staff-session";        // a password sign-in, same as the console
   var EVENT_KEY = "gate-event";
   var DEVICE_KEY = "gate-device";
+  var THEME_KEY = "gate-theme";           // per phone, not per person — the room decides
   var GONE_MS = 1500;                      // a badge must leave frame to count again
   var SCAN_TIMEOUT_MS = 25000;
   var PASS_CLEAR_MS = 1900;                // only a pass clears itself
@@ -311,7 +332,11 @@
       }
     });
     window.google.accounts.id.renderButton(slot, {
-      theme: "filled_black", size: "large", text: "signin_with", shape: "pill"
+      // Google renders this button itself, so our tokens cannot reach it.
+      // filled_black is a black pill: right on the cream ground, nearly
+      // invisible on the dark one. outline keeps a visible edge on both.
+      theme: currentTheme() === "dark" ? "outline" : "filled_black",
+      size: "large", text: "signin_with", shape: "pill"
     });
   }
 
@@ -839,6 +864,7 @@
         esc(ev ? ev.name : "เลือกงาน") + " ▾</span></div>" +
         '<button class="net' + (state.online ? "" : " is-down") + '" data-act="probe">' +
         '<i class="dot"></i>' + (state.online ? "ออนไลน์" : "ออฟไลน์ · หยุดรับ") + "</button>" +
+        themeBtn() +
       "</div>";
 
     var tabs =
@@ -853,6 +879,18 @@
       '<div class="verdict" id="verdict"></div>' +
       (state.eventId ? "" : viewPicker()) +
       "</div>";
+  }
+
+  // The icon shows what you will GET, not what you have: a moon on the cream
+  // ground means tapping turns the lights down. The label says it in words,
+  // because a bare icon tells a screen reader nothing.
+  function themeBtn() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    return '<button class="theme" data-act="theme" aria-label="' +
+      (dark ? "เปลี่ยนเป็นพื้นสว่าง" : "เปลี่ยนเป็นพื้นเข้ม") + '">' +
+      '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+      (dark ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>' : '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>') +
+      "</svg></button>";
   }
 
   function tabBtn(id, label, path) {
@@ -1051,6 +1089,12 @@
       try { localStorage.setItem(EVENT_KEY, state.eventId); } catch (e) {}
       render();
       loadTab();
+    } else if (what === "theme") {
+      // render() rebuilds the bar, so the icon flips to the other one on its
+      // own. Nothing else on screen depends on the ground — the tokens do the
+      // work — so there is no state to reconcile here.
+      applyTheme(currentTheme() === "dark" ? "light" : "dark");
+      render();
     } else if (what === "probe") {
       callSvc("whoAmI", {}).then(function (res) {
         if (res && res.ok) { markOnline(true); flash("เชื่อมต่อได้แล้ว"); }

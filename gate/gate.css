@@ -15,6 +15,22 @@
   --bad:#c1391f;  --bad-bg:#fbeae7;
   --wait:#2f4d8c; --wait-bg:#e9edf5;
   --well:#13110c;
+  /* the toast is ink-on-cream today, so in dark it has to invert or it sinks
+     into the ground; the sheet scrim has to darken a ground that is already dark */
+  --toast-bg:rgba(23,21,15,.92); --toast-ink:#fff5ef; --scrim:rgba(23,21,15,.5);
+}
+
+/* Dark is a choice the operator makes per phone, because the room decides and
+   the same person works a bright hall on Tuesday and a dark one on Friday.
+   Only the chrome moves: --accent, --well and the four verdict colours are
+   identical in both, so the door language never changes under anyone.
+   In dark, --cream equals --well on purpose — the chrome and the camera
+   become one surface, which is what makes it read as calm rather than busy. */
+html[data-theme="dark"]{
+  --cream:#13110c; --paper:#1c1811; --imgbg:#241f17;
+  --ink:#f4f1e6; --muted:#9a927f; --faint:#6f6858;
+  --rule:#3a3327; --hair:#2a251c;
+  --toast-bg:rgba(244,241,230,.94); --toast-ink:#17150f; --scrim:rgba(0,0,0,.62);
 }
 *{box-sizing:border-box}
 html{background:var(--cream)}
@@ -51,6 +67,11 @@ button{font-family:inherit}
      border:1px solid var(--hair);cursor:pointer}
 .net.is-down{background:var(--wait-bg);color:var(--wait);border-color:var(--wait)}
 .dot{width:6px;height:6px;border-radius:99px;background:var(--ok);flex:none}
+.theme{flex:none;display:grid;place-items:center;width:34px;height:31px;border-radius:99px;
+       background:var(--paper);border:1px solid var(--hair);color:var(--muted);cursor:pointer;padding:0}
+.theme svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;
+           stroke-linecap:round;stroke-linejoin:round}
+.theme:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .net.is-down .dot{background:var(--wait)}
 
 /* ---- panes ---- */
@@ -151,7 +172,7 @@ button{font-family:inherit}
 .tabs svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6}
 
 /* ---- event picker sheet ---- */
-.sheet{position:fixed;inset:0;z-index:70;background:rgba(23,21,15,.5);display:grid;place-items:end center}
+.sheet{position:fixed;inset:0;z-index:70;background:var(--scrim);display:grid;place-items:end center}
 .sheet-in{width:100%;max-width:480px;background:var(--cream);padding:22px 20px calc(22px + env(safe-area-inset-bottom,0))}
 .sheet-in h2{font:600 18px Prompt,sans-serif;margin:0 0 4px}
 .sheet-in p{font:300 12.5px/1.6 Prompt,sans-serif;color:var(--muted);margin:0 0 16px}
@@ -162,7 +183,7 @@ button{font-family:inherit}
 .ev span{display:block;font:400 11.5px Prompt,sans-serif;color:var(--muted);margin-top:3px}
 
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:96px;z-index:80;
-       background:rgba(23,21,15,.92);color:#fff5ef;padding:11px 18px;border-radius:99px;
+       background:var(--toast-bg);color:var(--toast-ink);padding:11px 18px;border-radius:99px;
        font:500 12.5px Prompt,sans-serif;pointer-events:none;max-width:88vw;text-align:center}
 
 @media (prefers-reduced-motion:reduce){.verdict{transition:none}}
