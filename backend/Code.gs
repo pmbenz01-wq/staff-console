@@ -55,6 +55,14 @@ var SHEETS = {
 // privacy notice deliberately names nobody, but somebody at 1NEVE still has to
 // be able to answer "who gets this event's data" when an attendee asks.
 var EVENTS_HEADERS = ['event_id', 'name', 'date_display', 'place', 'status_label', 'seats_label', 'price_label', 'accent', 'theme', 'open', 'short_label', 'spreadsheet_id', 'hidden', 'image_url', 'pdpa', 'doors_at', 'organizer_name', 'organizer_contact'];
+// The public keys listEvents() is allowed to send. listEvents is public and
+// unauthenticated, so this is an allowlist, not a denylist: a field left off
+// this list is simply missing from the customer site (visible, obvious,
+// harmless) rather than leaked to it (invisible, and — for something like
+// organizerName/organizerContact — a PDPA problem). Adding a new public field
+// means adding it here on purpose; a staff-only field added elsewhere needs
+// no corresponding edit to stay private.
+var PUBLIC_EVENT_KEYS = ['id', 'name', 'date', 'place', 'status', 'seats', 'price', 'accent', 'theme', 'open', 'short', 'hidden', 'image', 'pdpa', 'doors'];
 var FIELDS_HEADERS = ['event_id', 'key', 'label', 'type', 'required', 'sort_order'];
 var REG_HEADERS = ['reg_id', 'event_id', 'badge_code', 'qr_token', 'full_name', 'email', 'phone', 'org', 'type', 'answers_json', 'source', 'status', 'registered_at', 'consent_at', 'checked_in_at', 'checked_in_by', 'gate', 'device_id', 'scan_count', 'updated_at', 'updated_by'];
 // Append-only scan history — one row per scan attempt, never overwritten, so
@@ -745,8 +753,8 @@ function allEventsRows_() {
       // line out rather than inventing a time.
       doors: o.doors_at || '',
       // Staff-only. svcBootstrap_ passes these straight through; listEvents
-      // deletes them below. Anything new added here is public by default, so
-      // the deletion list is the thing to keep in step.
+      // only copies PUBLIC_EVENT_KEYS below, so a field added here stays
+      // private by default and never needs an edit elsewhere to do so.
       organizerName: o.organizer_name || '',
       organizerContact: o.organizer_contact || ''
     };
@@ -757,14 +765,12 @@ function listEvents() {
   return allEventsRows_()
     .filter(function (e) { return !e.hidden; })
     .map(function (e) {
-      // This endpoint answers anyone, with no token. The Organizer's name and
-      // contact are recorded for 1NEVE's own use (ADR events-checkin-0028) and
-      // must not ride out on a public response.
+      // This endpoint answers anyone, with no token. Only PUBLIC_EVENT_KEYS
+      // goes out — the Organizer's name and contact (recorded for 1NEVE's own
+      // use, ADR events-checkin-0028) are left off that list on purpose, and
+      // so is anything staff-only added to allEventsRows_() later.
       var pub = {};
-      Object.keys(e).forEach(function (k) {
-        if (k === 'organizerName' || k === 'organizerContact') return;
-        pub[k] = e[k];
-      });
+      PUBLIC_EVENT_KEYS.forEach(function (k) { pub[k] = e[k]; });
       return pub;
     });
 }
@@ -1490,10 +1496,10 @@ function svcDeleteAttendee_(p) {
     for (var i = 0; i < t.rows.length; i++) {
       var o = rowToObj_(t.headers, t.rows[i]);
       if (o.reg_id !== p.regId) continue;
+      t.sheet.getRange(i + 2, col.status).setValue('deleted');
       wipe.forEach(function (name) {
         if (col[name]) t.sheet.getRange(i + 2, col[name]).setValue('');
       });
-      t.sheet.getRange(i + 2, col.status).setValue('deleted');
       t.sheet.getRange(i + 2, col.updated_at).setValue(nowIso);
       t.sheet.getRange(i + 2, col.updated_by).setValue(staff.email);
       found = true;
@@ -1515,10 +1521,10 @@ function svcDeleteAttendee_(p) {
       var mcol = {}; m.headers.forEach(function (h, i) { mcol[h] = i + 1; });
       for (var j = 0; j < m.rows.length; j++) {
         if (rowToObj_(m.headers, m.rows[j]).reg_id !== p.regId) continue;
+        m.sheet.getRange(j + 2, mcol.status).setValue('deleted');
         wipe.forEach(function (name) {
           if (mcol[name]) m.sheet.getRange(j + 2, mcol[name]).setValue('');
         });
-        m.sheet.getRange(j + 2, mcol.status).setValue('deleted');
         mirrorFound = true;
         break;
       }
@@ -1635,7 +1641,7 @@ function svcCreateEvent_(p) {
     // how image_url ended up unreachable.
     SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.EVENTS).appendRow([
       id, name, String(p.date || 'ยังไม่กำหนดวัน'), String(p.place || ''), 'เปิดรับ',
-      'เปิดรับแล้ว', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true,
+      '', String(p.price || 'ไม่มีค่าใช้จ่าย'), themes[theme], theme, true,
       name.toUpperCase(), fileId,
       false,                                    // hidden
       '',                                       // image_url — blank means "no banner yet"
@@ -1814,9 +1820,9 @@ function svcSetEventProp_(p) {
     if (p.organizerContact !== undefined) {
       sh.getRange(i + 2, ensureEventCol_(sh, t, col, 'organizer_contact')).setValue(String(p.organizerContact || ''));
     }
-    if (p.name) sh.getRange(i + 2, col.name).setValue(p.name);
-    if (p.date) sh.getRange(i + 2, col.date_display).setValue(p.date);
-    if (p.place) sh.getRange(i + 2, col.place).setValue(p.place);
+    if (p.name !== undefined && String(p.name).trim()) sh.getRange(i + 2, col.name).setValue(p.name);
+    if (p.date !== undefined) sh.getRange(i + 2, col.date_display).setValue(String(p.date || ''));
+    if (p.place !== undefined) sh.getRange(i + 2, col.place).setValue(String(p.place || ''));
     audit_(staff, 'setEventProp', p.eventId, '', JSON.stringify(p));
     return { ok: true };
   }

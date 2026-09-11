@@ -1202,6 +1202,7 @@
           var text = (state.es.price && state.es.price.trim()) ? state.es.price.trim() : "ไม่มีค่าใช้จ่าย";
           api("setEventProp", { eventId: state.eventId, price: text }).then(function () {
             var cur = ev(); if (cur) cur.price = text;
+            state.es.price = text;
             render();
           }).catch(fail);
         }
