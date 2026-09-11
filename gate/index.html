@@ -2,7 +2,27 @@
 <meta charset="utf-8">
 <title>1neve Gate — เช็คอินหน้างาน</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#f4f1e6">
+<meta name="theme-color" content="#f4f1e6" id="theme-color">
+
+<!-- Inline and above the stylesheet on purpose. If the ground were decided in
+     gate.js, which loads at the end of the document, a phone set to dark would
+     flash a cream screen first. This is the one place that can be sure it runs
+     before the first paint. gate.js duplicates the read when it toggles; the
+     storage key and the values are the contract between them. -->
+<script>
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("gate-theme"); } catch (e) {}
+    if (t !== "dark" && t !== "light") {
+      t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    if (t === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
+      var m = document.getElementById("theme-color");
+      if (m) m.setAttribute("content", "#13110c");
+    }
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600&display=swap" rel="stylesheet">
