@@ -1459,22 +1459,65 @@ function svcAddWalkin_(p) {
   return { regId: regId, badgeCode: badgeCode, name: name, qrPayload: p.eventId + '|' + badgeCode + '|' + signQr_(p.eventId, badgeCode) };
 }
 
-// Soft delete — the row stays so the scan history still resolves, but every
-// read filters it out.
+// Erasure, not a strikethrough. ADR events-checkin-0029 publishes "kept until
+// someone asks for it to be gone", which is only true if asking works.
+// The identifying columns are cleared; reg_id, event_id, status, registered_at
+// and checked_in_at stay, so last year's attendance numbers do not move.
+// badge_code and qr_token are cleared too — a pass whose owner asked to be
+// forgotten must not still open a door.
 function svcDeleteAttendee_(p) {
   var staff = requireStaff_(p.eventId, 'ADMIN');
-  var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
-  var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
-  for (var i = 0; i < t.rows.length; i++) {
-    var o = rowToObj_(t.headers, t.rows[i]);
-    if (o.reg_id !== p.regId) continue;
-    t.sheet.getRange(i + 2, col.status).setValue('deleted');
-    t.sheet.getRange(i + 2, col.updated_at).setValue(new Date().toISOString());
-    t.sheet.getRange(i + 2, col.updated_by).setValue(staff.email);
-    audit_(staff, 'deleteAttendee', p.eventId, p.regId, o.full_name);
-    return { ok: true };
+  var nowIso = new Date().toISOString();
+  var wipe = ['full_name', 'email', 'phone', 'org', 'answers_json', 'badge_code', 'qr_token'];
+
+  // Under the same script lock register() takes, because this clears the very
+  // columns a concurrent registration is appending.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw new Error('busy');
+
+  var found = false;
+  try {
+    // 1. The event's own file — the source of truth.
+    var t = readSheet_(SHEETS.REGISTRATIONS, openEventFile_(p.eventId));
+    var col = {}; t.headers.forEach(function (h, i) { col[h] = i + 1; });
+    for (var i = 0; i < t.rows.length; i++) {
+      var o = rowToObj_(t.headers, t.rows[i]);
+      if (o.reg_id !== p.regId) continue;
+      wipe.forEach(function (name) {
+        if (col[name]) t.sheet.getRange(i + 2, col[name]).setValue('');
+      });
+      t.sheet.getRange(i + 2, col.status).setValue('deleted');
+      t.sheet.getRange(i + 2, col.updated_at).setValue(nowIso);
+      t.sheet.getRange(i + 2, col.updated_by).setValue(staff.email);
+      found = true;
+      break;
+    }
+    if (!found) throw new Error('not_found');
+
+    // 2. The Overview mirror — what getMyPass actually reads. Best effort for
+    // the same reason register()'s mirror write is: the source of truth is
+    // already correct, and a mirror failure must be visible in the log rather
+    // than undo a deletion the operator was told had happened.
+    try {
+      var m = readSheet_(SHEETS.ALL_REG);
+      var mcol = {}; m.headers.forEach(function (h, i) { mcol[h] = i + 1; });
+      for (var j = 0; j < m.rows.length; j++) {
+        if (rowToObj_(m.headers, m.rows[j]).reg_id !== p.regId) continue;
+        wipe.forEach(function (name) {
+          if (mcol[name]) m.sheet.getRange(j + 2, mcol[name]).setValue('');
+        });
+        m.sheet.getRange(j + 2, mcol.status).setValue('deleted');
+        break;
+      }
+    } catch (mirrorErr) {
+      Logger.log('AllRegistrations erase failed for ' + p.regId + ': ' + mirrorErr);
+    }
+  } finally {
+    lock.releaseLock();
   }
-  throw new Error('not_found');
+
+  audit_(staff, 'deleteAttendee', p.eventId, p.regId, '');
+  return { ok: true };
 }
 
 function audit_(staff, action, eventId, targetId, detail) {
